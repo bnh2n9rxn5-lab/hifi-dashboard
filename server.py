@@ -33,7 +33,7 @@ import nexia  # Nexia PM sub-bus control (telnet, stdlib) — see nexia.py
 
 PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v5"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v6"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -50,10 +50,12 @@ VOL_QUICK = {"quiet": 35, "medium": 60, "loud": 85}
 #   - switching preset recalls that preset's sub level (a scene trim).
 # Manual sub-slider moves hold until the next preset change. Tune these freely.
 SUB_FOLLOW_PRESET = True
-# The Nexia output block rejects boost (>0 dB), so trims are anchored with the
-# hottest preset (EDM) at 0 and the rest cut relative to it — same spacing as
-# the old {0,+3,+2,-8} intent, shifted -3 to fit the device's cut-only range.
-PRESET_SUB_TRIM = {0: -3.0, 1: 0.0, 2: -1.0, 3: -11.0}  # Flat / EDM / Movies / Late Night, dB
+# The Nexia output block rejects boost (>0 dB). To still give the slider
+# headroom in both directions, the input block carries +6 dB static makeup
+# gain (INPLVLPML inst 7, both ch — set 2026-07-06) and the trims are anchored
+# 6 dB lower here: same relative spacing as the original {0,+3,+2,-8} intent,
+# same acoustic level, ~±6 dB of slider travel around each preset's anchor.
+PRESET_SUB_TRIM = {0: -9.0, 1: -6.0, 2: -7.0, 3: -17.0}  # Flat / EDM / Movies / Late Night, dB
 
 _coupled = {"preset": None, "mute": None}  # last miniDSP state we mirrored
 _couple_lock = threading.Lock()
