@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.DS_Store
+# QR codes encode the dashboard URL including the auth token
+hifi-qr*.png
