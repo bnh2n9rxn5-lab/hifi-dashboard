@@ -24,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -32,7 +33,7 @@ import nexia  # Nexia PM sub-bus control (telnet, stdlib) — see nexia.py
 
 PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v4"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v5"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -49,9 +50,13 @@ VOL_QUICK = {"quiet": 35, "medium": 60, "loud": 85}
 #   - switching preset recalls that preset's sub level (a scene trim).
 # Manual sub-slider moves hold until the next preset change. Tune these freely.
 SUB_FOLLOW_PRESET = True
-PRESET_SUB_TRIM = {0: 0.0, 1: 3.0, 2: 2.0, 3: -8.0}  # Flat / EDM / Movies / Late Night, dB
+# The Nexia output block rejects boost (>0 dB), so trims are anchored with the
+# hottest preset (EDM) at 0 and the rest cut relative to it — same spacing as
+# the old {0,+3,+2,-8} intent, shifted -3 to fit the device's cut-only range.
+PRESET_SUB_TRIM = {0: -3.0, 1: 0.0, 2: -1.0, 3: -11.0}  # Flat / EDM / Movies / Late Night, dB
 
 _coupled = {"preset": None, "mute": None}  # last miniDSP state we mirrored
+_couple_lock = threading.Lock()
 
 # ---- shell helpers -------------------------------------------------------
 
@@ -177,17 +182,25 @@ def couple_to_dsp(d):
         return
     now = time.time()
     preset, mute = d.get("preset"), d.get("mute")
-    first = _coupled["preset"] is None and _coupled["mute"] is None
-    if not first:
-        if (SUB_FOLLOW_PRESET and preset is not None and preset != _coupled["preset"]
-                and preset in PRESET_SUB_TRIM):
-            nexia.set_level(PRESET_SUB_TRIM[preset], now)
-        if mute is not None and mute != _coupled["mute"]:
-            nexia.set_mute(mute, now)
-    if preset is not None:
-        _coupled["preset"] = preset
-    if mute is not None:
-        _coupled["mute"] = mute
+    # Claim the transition under a lock BEFORE the slow (~2.4s) Nexia write —
+    # otherwise every poll thread that piles up meanwhile sees the same stale
+    # _coupled and fires a duplicate write (observed: 4x for one change).
+    with _couple_lock:
+        first = _coupled["preset"] is None and _coupled["mute"] is None
+        old_preset, old_mute = _coupled["preset"], _coupled["mute"]
+        if preset is not None:
+            _coupled["preset"] = preset
+        if mute is not None:
+            _coupled["mute"] = mute
+    if first:
+        return
+    if (SUB_FOLLOW_PRESET and preset is not None and preset != old_preset
+            and preset in PRESET_SUB_TRIM):
+        nexia.set_level(PRESET_SUB_TRIM[preset], now,
+                        src="couple preset %s->%s" % (old_preset, preset))
+    if mute is not None and mute != old_mute:
+        nexia.set_mute(mute, now,
+                       src="couple mute %s->%s" % (old_mute, mute))
 
 
 def full_status():
@@ -539,7 +552,7 @@ select{width:100%;padding:13px;border-radius:13px;background:rgba(255,255,255,.0
 
   <div class="card">
     <div class="row between"><div class="label" style="margin:0">Subs</div><div class="volval" id="subVal">—</div></div>
-    <input class="vol" id="sub" type="range" min="-24" max="6" step="0.5" value="0" oninput="subLive(this.value)" onchange="subSet(this.value)">
+    <input class="vol" id="sub" type="range" min="-24" max="0" step="0.5" value="0" oninput="subLive(this.value)" onchange="subSet(this.value)">
     <div class="row" style="margin-top:14px">
       <button class="mute" id="subMuteBtn" onclick="toggleSubMute()">Mute Subs</button>
     </div>
@@ -661,11 +674,13 @@ $('vol').addEventListener('mouseup',()=>{dragging=false});
 
 // ---- subs (Nexia, dB not %) ----
 let subDragging=false, subTimer=null, subPending=null, subMutePending=null, subPendingAt=0;
-function subPct(v){return Math.max(0,Math.min(100,(v+24)/30*100));} // -24..+6 -> 0..100
+function subPct(v){return Math.max(0,Math.min(100,(v+24)/24*100));} // -24..0 -> 0..100 (device rejects boost)
 function subLive(v,silent){v=+v;$('sub').style.backgroundSize=subPct(v)+'% 100%';
   $('subVal').textContent=(v>0?'+':'')+v.toFixed(1)+' dB';}
 function subSet(v){v=Math.round(v*2)/2;$('sub').value=v;subLive(v);subPending=v;subPendingAt=Date.now();
-  clearTimeout(subTimer);subTimer=setTimeout(()=>post('/api/sub-level?db='+v,true),150)}
+  clearTimeout(subTimer);subTimer=setTimeout(async()=>{ // not quiet: surface write failures
+    if(await post('/api/sub-level?db='+v)===false){subPending=null;} // failed -> snap to truth now
+  },150)}
 function toggleSubMute(){const on=!$('subMuteBtn').classList.contains('on');const smb=$('subMuteBtn');
   smb.classList.toggle('on',on);smb.textContent=on?'Subs Muted':'Mute Subs';subMutePending=on;subPendingAt=Date.now();
   post('/api/sub-mute?on='+(on?1:0),true)}
@@ -723,7 +738,8 @@ async function post(path,quiet){
     const j=await r.json();
     if(j.status)render(j.status);
     if(!j.ok && !quiet)toast((j.err||j.out||'failed').slice(0,80),true);
-  }catch(e){toast('network error',true)}
+    return !!j.ok;
+  }catch(e){toast('network error',true);return false}
 }
 async function poll(){
   try{

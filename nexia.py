@@ -25,14 +25,26 @@ DEV = 1              # Nexia device number (GET 0 DEVID -> 1)
 OUT_INST = 8         # PM Stereo Line Output block instance (new sub config, sent 2026-07-05)
 SUB_CHANS = (5, 6)   # sub amp is fed from output channels 5 & 6 (stereo)
 
-# Usable slider range for the UI/clamp. The block allows +12 but boosting subs
-# hard is asking for trouble; cap the boost and let the level pull well down.
+# Usable slider range for the UI/clamp. The deployed design's output block
+# hard-rejects anything above 0 dB (SET > 0 -> -ERR:XACTION ERROR, verified
+# live 2026-07-05); raising that ceiling would need a design change pushed
+# from the Windows Nexia software. Cut-only is also kinder to the drivers.
 LVL_MIN = -40.0
-LVL_MAX = 6.0
+LVL_MAX = 0.0
 
 _lock = threading.Lock()
 _cache = {"ok": False, "level": 0.0, "muted": False, "ts": 0.0, "error": "not polled yet"}
 _write_ts = 0.0   # timestamp of the last write; a concurrent read must not clobber a newer write
+
+LOG = "/tmp/nexia-sub.log"   # write/read audit trail for chasing the slider spring-back
+
+
+def _log(msg):
+    try:
+        with open(LOG, "a") as f:
+            f.write("%s %s\n" % (time.strftime("%H:%M:%S"), msg))
+    except OSError:
+        pass
 
 
 def _strip_iac(b):
@@ -128,6 +140,9 @@ def status(now, max_age=8.0):
         # a write landed while we were reading — its value is authoritative, don't clobber it
         return dict(_cache)
     if fresh["ok"]:
+        if abs(fresh["level"] - _cache["level"]) > 0.01 or fresh["muted"] != _cache["muted"]:
+            _log("READ device=%s/%s differs from cache=%s/%s -> cache updated"
+                 % (fresh["level"], fresh["muted"], _cache["level"], _cache["muted"]))
         _cache.update(fresh, ts=now, error="")
     else:
         _cache.update(ok=False, ts=now, error=fresh.get("error", "read failed"))
@@ -143,11 +158,12 @@ def _note(now, **kw):
 
 # ---- writes (return (rc, out, err) to match server.py's act_* convention) --
 
-def set_level(db, now=None):
+def set_level(db, now=None, src="api"):
     try:
         db = max(LVL_MIN, min(LVL_MAX, float(db)))
     except (TypeError, ValueError):
         return (2, "", "bad sub level")
+    _log("WRITE level=%.1f src=%s" % (db, src))
     if now is not None:
         global _write_ts
         _write_ts = now
@@ -155,14 +171,17 @@ def set_level(db, now=None):
     try:
         rep = _run(["SET %d OUTLVLPM %d %d %.2f" % (DEV, OUT_INST, ch, db) for ch in SUB_CHANS])
     except OSError as e:
+        _log("FAIL level=%.1f OSError: %s" % (db, e))
         return (1, "", "nexia unreachable: %s" % e)
     if all(_ok(r) for r in rep):
         return (0, "sub level %.1f dB" % db, "")
+    _log("FAIL level=%.1f replies: %s" % (db, " / ".join(rep)))
     return (1, "", "nexia: %s" % " / ".join(rep))
 
 
-def set_mute(on, now=None):
+def set_mute(on, now=None, src="api"):
     val = 1 if on else 0
+    _log("WRITE mute=%s src=%s" % (val, src))
     if now is not None:
         global _write_ts
         _write_ts = now
@@ -170,9 +189,11 @@ def set_mute(on, now=None):
     try:
         rep = _run(["SET %d OUTMUTEPM %d %d %d" % (DEV, OUT_INST, ch, val) for ch in SUB_CHANS])
     except OSError as e:
+        _log("FAIL mute=%s OSError: %s" % (val, e))
         return (1, "", "nexia unreachable: %s" % e)
     if all(_ok(r) for r in rep):
         return (0, "sub %s" % ("muted" if on else "unmuted"), "")
+    _log("FAIL mute=%s replies: %s" % (val, " / ".join(rep)))
     return (1, "", "nexia: %s" % " / ".join(rep))
 
 
