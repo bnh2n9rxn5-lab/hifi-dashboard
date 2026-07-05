@@ -33,7 +33,7 @@ import nexia  # Nexia PM sub-bus control (telnet, stdlib) — see nexia.py
 
 PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v6"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v7"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -50,12 +50,12 @@ VOL_QUICK = {"quiet": 35, "medium": 60, "loud": 85}
 #   - switching preset recalls that preset's sub level (a scene trim).
 # Manual sub-slider moves hold until the next preset change. Tune these freely.
 SUB_FOLLOW_PRESET = True
-# The Nexia output block rejects boost (>0 dB). To still give the slider
-# headroom in both directions, the input block carries +6 dB static makeup
-# gain (INPLVLPML inst 7, both ch — set 2026-07-06) and the trims are anchored
-# 6 dB lower here: same relative spacing as the original {0,+3,+2,-8} intent,
-# same acoustic level, ~±6 dB of slider travel around each preset's anchor.
-PRESET_SUB_TRIM = {0: -9.0, 1: -6.0, 2: -7.0, 3: -17.0}  # Flat / EDM / Movies / Late Night, dB
+# The Nexia output block rejects boost (>0 dB). To give the slider headroom in
+# both directions, the input block carries +6 dB static makeup gain (INPLVLPML
+# inst 7, both ch — set 2026-07-06) and the app translates: UI/trims speak the
+# original scale, the device output runs SUB_MAKEUP lower. UI +6 = device 0.
+SUB_MAKEUP = 6.0
+PRESET_SUB_TRIM = {0: 0.0, 1: 3.0, 2: 2.0, 3: -8.0}  # Flat / EDM / Movies / Late Night, dB (UI scale)
 
 _coupled = {"preset": None, "mute": None}  # last miniDSP state we mirrored
 _couple_lock = threading.Lock()
@@ -198,7 +198,7 @@ def couple_to_dsp(d):
         return
     if (SUB_FOLLOW_PRESET and preset is not None and preset != old_preset
             and preset in PRESET_SUB_TRIM):
-        nexia.set_level(PRESET_SUB_TRIM[preset], now,
+        nexia.set_level(PRESET_SUB_TRIM[preset] - SUB_MAKEUP, now,
                         src="couple preset %s->%s" % (old_preset, preset))
     if mute is not None and mute != old_mute:
         nexia.set_mute(mute, now,
@@ -210,7 +210,9 @@ def full_status():
     d["now"] = now_playing()
     d["volume"] = music_volume()
     couple_to_dsp(d)
-    d["sub"] = nexia.status(time.time())
+    sub = nexia.status(time.time())
+    sub["level"] = round(sub["level"] + SUB_MAKEUP, 1)  # device dB -> UI scale
+    d["sub"] = sub
     d["version"] = APP_VERSION
     return d
 
@@ -295,7 +297,12 @@ def act_faves():
 
 
 def act_sub_level(db):
-    return nexia.set_level(db, time.time())
+    # UI speaks the original trim scale; the device runs SUB_MAKEUP lower.
+    try:
+        dev = float(db) - SUB_MAKEUP
+    except (TypeError, ValueError):
+        return (2, "", "bad sub level")
+    return nexia.set_level(dev, time.time())
 
 
 def act_sub_mute(on):
@@ -554,7 +561,7 @@ select{width:100%;padding:13px;border-radius:13px;background:rgba(255,255,255,.0
 
   <div class="card">
     <div class="row between"><div class="label" style="margin:0">Subs</div><div class="volval" id="subVal">—</div></div>
-    <input class="vol" id="sub" type="range" min="-24" max="0" step="0.5" value="0" oninput="subLive(this.value)" onchange="subSet(this.value)">
+    <input class="vol" id="sub" type="range" min="-18" max="6" step="0.5" value="0" oninput="subLive(this.value)" onchange="subSet(this.value)">
     <div class="row" style="margin-top:14px">
       <button class="mute" id="subMuteBtn" onclick="toggleSubMute()">Mute Subs</button>
     </div>
@@ -676,7 +683,7 @@ $('vol').addEventListener('mouseup',()=>{dragging=false});
 
 // ---- subs (Nexia, dB not %) ----
 let subDragging=false, subTimer=null, subPending=null, subMutePending=null, subPendingAt=0;
-function subPct(v){return Math.max(0,Math.min(100,(v+24)/24*100));} // -24..0 -> 0..100 (device rejects boost)
+function subPct(v){return Math.max(0,Math.min(100,(v+18)/24*100));} // -18..+6 UI scale -> 0..100 (device = UI - 6)
 function subLive(v,silent){v=+v;$('sub').style.backgroundSize=subPct(v)+'% 100%';
   $('subVal').textContent=(v>0?'+':'')+v.toFixed(1)+' dB';}
 function subSet(v){v=Math.round(v*2)/2;$('sub').value=v;subLive(v);subPending=v;subPendingAt=Date.now();
