@@ -33,7 +33,7 @@ import nexia  # Nexia PM sub-bus control (telnet, stdlib) — see nexia.py
 
 PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v7"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v8"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -655,8 +655,8 @@ function render(s){
   const smb=$('subMuteBtn');
   if(sub.ok){
     // optimistic: hold at the user's just-set value until the device confirms it (slow ~1.2s write) or 6s timeout
-    if(subPending!==null && (Math.abs((sub.level||0)-subPending)<0.01 || Date.now()-subPendingAt>6000)) subPending=null;
-    if(subMutePending!==null && (!!sub.muted===subMutePending || Date.now()-subPendingAt>6000)) subMutePending=null;
+    if(subPending!==null && (Math.abs((sub.level||0)-subPending)<0.01 || Date.now()-subPendingAt>3000)) subPending=null;
+    if(subMutePending!==null && (!!sub.muted===subMutePending || Date.now()-subPendingAt>3000)) subMutePending=null;
     if(!subDragging){const lv=subPending!==null?subPending:sub.level;$('sub').value=lv;subLive(lv,true);}
     const mu=subMutePending!==null?subMutePending:!!sub.muted;
     smb.classList.toggle('on',mu);smb.textContent=mu?'Subs Muted':'Mute Subs';
