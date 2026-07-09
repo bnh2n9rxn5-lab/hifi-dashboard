@@ -33,7 +33,7 @@ import nexia  # Nexia PM sub-bus control (telnet, stdlib) — see nexia.py
 
 PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v10"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v11"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -353,7 +353,93 @@ def current_artwork():
         return data, mime
 
 
-def act_love(on):
+# ---- audio-path recovery ---------------------------------------------------
+# 2026-07-08 incident: the E70's USB audio path wedged (silence at the miniDSP
+# analog inputs while macOS streamed happily into the DAC; E70 panel normal).
+# Recovery that worked: toggle the miniDSP source away/back + bounce the
+# system default output device to force CoreAudio to tear down and rebuild
+# the USB stream. This runs both, then reports the input meters.
+
+def _bounce_output_device():
+    """Switch the default output to another device and back (CoreAudio kick).
+
+    Generic: remembers the current default, hops to any other output device
+    (preferring Built-in), and restores. Returns (ok, message).
+    """
+    import ctypes.util
+    import struct
+    try:
+        ca = ctypes.CDLL(ctypes.util.find_library("CoreAudio"))
+        cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+        cf.CFStringGetCString.restype = ctypes.c_bool
+        cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p,
+                                          ctypes.c_long, ctypes.c_uint32]
+
+        def fourcc(s):
+            return struct.unpack(">I", s)[0]
+
+        def addr(sel):
+            return struct.pack("III", fourcc(sel), fourcc(b"glob"), 0)
+
+        def get_prop(obj, a, size):
+            buf = ctypes.create_string_buffer(size)
+            sz = ctypes.c_uint32(size)
+            rc = ca.AudioObjectGetPropertyData(obj, a, 0, None, ctypes.byref(sz), buf)
+            return rc, buf.raw[:sz.value]
+
+        def name_of(dev):
+            rc, raw = get_prop(dev, addr(b"lnam"), 8)
+            if rc != 0 or len(raw) < 8:
+                return "?"
+            ref = struct.unpack("Q", raw[:8])[0]
+            out = ctypes.create_string_buffer(256)
+            cf.CFStringGetCString(ctypes.c_void_p(ref), out, 256, 0x08000100)
+            return out.value.decode("utf-8", "replace")
+
+        def has_output(dev):
+            # stream configuration on the output scope: any streams -> output-capable
+            a = struct.pack("III", fourcc(b"slay"), fourcc(b"outp"), 0)
+            sz = ctypes.c_uint32(0)
+            rc = ca.AudioObjectGetPropertyDataSize(dev, a, 0, None, ctypes.byref(sz))
+            return rc == 0 and sz.value > 8
+
+        def set_default(dev):
+            return ca.AudioObjectSetPropertyData(
+                1, addr(b"dOut"), 0, None, 4, struct.pack("I", dev))
+
+        rc, raw = get_prop(1, addr(b"dev#"), 4 * 64)
+        devs = [d for d in struct.unpack("%dI" % (len(raw) // 4), raw) if d]
+        rc, raw = get_prop(1, addr(b"dOut"), 4)
+        cur = struct.unpack("I", raw[:4])[0]
+        outs = [d for d in devs if d != cur and has_output(d)]
+        if not outs:
+            return False, "no alternate output device to bounce through"
+        alt = next((d for d in outs if "Built-in" in name_of(d)), outs[0])
+        if set_default(alt) != 0:
+            return False, "could not switch output device"
+        time.sleep(1.2)
+        if set_default(cur) != 0:
+            return False, "SWITCHED BUT COULD NOT RESTORE %s — set output manually!" % name_of(cur)
+        return True, "bounced %s -> %s -> back" % (name_of(cur), name_of(alt))
+    except Exception as e:  # ctypes failures shouldn't kill the request
+        return False, "bounce failed: %s" % e
+
+
+def act_fix_audio():
+    """Run the audio-path recovery sequence and report the result."""
+    before = dsp_status().get("inputs") or []
+    run([MINIDSP, "source", "usb"], timeout=10)
+    time.sleep(1.0)
+    run([MINIDSP, "source", "analog"], timeout=10)
+    ok, msg = _bounce_output_device()
+    time.sleep(1.8)
+    after = dsp_status().get("inputs") or []
+    live = any(x > -75.0 for x in after)
+    report = "in %s -> %s dB; %s" % (
+        [round(x, 1) for x in before], [round(x, 1) for x in after], msg)
+    if live:
+        return (0, "audio path reset — signal present (%s)" % report, "")
+    return (1, "", "reset ran but inputs still silent (%s) — check the E70 panel/cables" % report)
     """Mark/unmark the current track as a Favorite in Apple Music."""
     val = "true" if on else "false"
     rc, out, err = osa('tell application "Music" to set favorited of current track to %s' % val,
@@ -483,6 +569,8 @@ class Handler(BaseHTTPRequestHandler):
             rc, out, err = act_sub_mute(arg("on", "1") == "1")
         elif p == "/api/love":
             rc, out, err = act_love(arg("on", "1") == "1")
+        elif p == "/api/fix-audio":
+            rc, out, err = act_fix_audio()
         elif p == "/api/play":
             rc, out, err = act_play(arg("name", ""))
         elif p == "/api/play-genre":
@@ -536,6 +624,9 @@ header{display:flex;align-items:center;justify-content:space-between;padding:4px
   box-shadow:0 10px 40px rgba(0,0,0,.35)}
 .np-state{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);font-weight:700}
 .np-title{font-size:23px;font-weight:750;margin:6px 0 2px;line-height:1.15}
+.fixbtn{font-size:11px;padding:5px 10px;border-radius:9px;border:1px solid #2a2f3d;background:#171b25;
+  color:var(--dim);font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.fixbtn:disabled{opacity:.5}
 .np-main{display:flex;align-items:center;gap:14px;margin-top:6px}
 .np-meta{flex:1;min-width:0}
 .np-art{width:86px;height:86px;border-radius:12px;object-fit:cover;background:#20242e;
@@ -613,7 +704,7 @@ select{width:100%;padding:13px;border-radius:13px;background:rgba(255,255,255,.0
 <div class="wrap">
   <header>
     <div class="brand"><div class="logo"></div>MB Hi-Fi <span style="font-size:11px;color:var(--dim);font-weight:400;align-self:flex-end;padding-bottom:2px">__APP_VERSION__</span></div>
-    <div class="row"><span id="srcLbl" class="muted" style="margin:0"></span><span id="dot" class="dot"></span></div>
+    <div class="row"><button id="fixBtn" class="fixbtn" onclick="fixAudio()" title="Reset the USB/DAC audio path">Fix Audio</button><span id="srcLbl" class="muted" style="margin:0"></span><span id="dot" class="dot"></span></div>
   </header>
 
   <div class="card">
@@ -797,6 +888,16 @@ $('vol').addEventListener('mouseup',()=>{dragging=false});
 // ---- subs (Nexia, dB not %) ----
 let subDragging=false, subTimer=null, subPending=null, subMutePending=null, subPendingAt=0;
 let lovePending=null, lovePendingAt=0, artKey=null;
+async function fixAudio(){
+  const b=$('fixBtn');b.disabled=true;const t=b.textContent;b.textContent='Fixing…';
+  try{
+    const r=await fetch('/api/fix-audio',{method:'POST',headers:hdrs()});
+    const j=await r.json();
+    if(j.status)render(j.status);
+    toast((j.ok?(j.out||'audio path reset'):(j.err||'reset failed')).slice(0,110),!j.ok);
+  }catch(e){toast('network error',true)}
+  b.disabled=false;b.textContent=t;
+}
 async function toggleLove(){
   const on=!$('loveBtn').classList.contains('on');
   lovePending=on; lovePendingAt=Date.now();
