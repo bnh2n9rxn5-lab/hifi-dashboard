@@ -33,7 +33,7 @@ import nexia  # Nexia PM sub-bus control (telnet, stdlib) — see nexia.py
 
 PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v9"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v10"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -249,10 +249,24 @@ def act_volume(v):
     return osa('tell application "Music" to set sound volume to %d' % v)
 
 
+PREV_SCRIPT = '''tell application "Music"
+    set player position to 0
+    back track
+    delay 0.3
+    if player state is not playing then play
+end tell'''
+
+
 def act_transport(cmd):
+    # "prev" always jumps BETWEEN tracks: rewind to 0 first so `back track`
+    # can't interpret the press as "restart current". Needs a real current
+    # playlist to land on — the dsp-play* helpers provide one ("HiFi Queue");
+    # an anonymous track-list queue has no previous to go to at all.
+    if cmd == "prev":
+        return osa(PREV_SCRIPT)
     mp = {
         "play": "play", "pause": "pause", "playpause": "playpause",
-        "next": "next track", "prev": "previous track",
+        "next": "next track",
     }
     if cmd not in mp:
         return (2, "", "bad transport cmd")
@@ -297,6 +311,46 @@ def act_play_artist(name):
 
 def act_faves():
     return run([os.path.join(BINDIR, "dsp-faves")], timeout=30)
+
+
+# ---- album artwork --------------------------------------------------------
+# Exported on demand (once per track — the page only refetches when the track
+# text changes), via a temp file since osascript can't return binary cleanly.
+ART_TMP = "/tmp/hifi-art.bin"
+ART_SCRIPT = '''tell application "Music"
+    set d to raw data of artwork 1 of current track
+end tell
+set f to open for access POSIX file "%s" with write permission
+set eof f to 0
+write d to f
+close access f
+return "ok"''' % ART_TMP
+
+_art_lock = threading.Lock()
+_art_cache = {"ts": 0.0, "data": b"", "mime": ""}
+
+
+def current_artwork():
+    """Return (data, mime) for the current track's artwork, or (b"", "")."""
+    with _art_lock:
+        if _art_cache["data"] and time.time() - _art_cache["ts"] < 2.0:
+            return _art_cache["data"], _art_cache["mime"]   # double-request guard
+        rc, out, err = osa(ART_SCRIPT, timeout=15)
+        if rc != 0:
+            return b"", ""
+        try:
+            with open(ART_TMP, "rb") as f:
+                data = f.read()
+        except OSError:
+            return b"", ""
+        if data.startswith(b"\xff\xd8"):
+            mime = "image/jpeg"
+        elif data.startswith(b"\x89PNG"):
+            mime = "image/png"
+        else:
+            return b"", ""
+        _art_cache.update(ts=time.time(), data=data, mime=mime)
+        return data, mime
 
 
 def act_love(on):
@@ -377,6 +431,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "unauthorized"}, 401)
         if u.path == "/api/status":
             return self._json(full_status())
+        if u.path == "/api/art":
+            data, mime = current_artwork()
+            if not data:
+                return self._json({"ok": False, "error": "no artwork"}, 404)
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if u.path == "/api/lists":
             return self._json({
                 "playlists": helper_lines("dsp-playlists"),
@@ -471,6 +536,11 @@ header{display:flex;align-items:center;justify-content:space-between;padding:4px
   box-shadow:0 10px 40px rgba(0,0,0,.35)}
 .np-state{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);font-weight:700}
 .np-title{font-size:23px;font-weight:750;margin:6px 0 2px;line-height:1.15}
+.np-main{display:flex;align-items:center;gap:14px;margin-top:6px}
+.np-meta{flex:1;min-width:0}
+.np-art{width:86px;height:86px;border-radius:12px;object-fit:cover;background:#20242e;
+  display:none;flex:none;box-shadow:0 4px 14px rgba(0,0,0,.35)}
+.np-art.show{display:block}
 .np-titlerow{display:flex;align-items:center;gap:10px}
 .np-titlerow .np-title{flex:1;min-width:0}
 .heart{background:none;border:none;font-size:26px;line-height:1;padding:6px 4px;cursor:pointer;
@@ -548,11 +618,17 @@ select{width:100%;padding:13px;border-radius:13px;background:rgba(255,255,255,.0
 
   <div class="card">
     <div id="npState" class="np-state">—</div>
-    <div class="np-titlerow">
-      <div id="npTitle" class="np-title">Nothing playing</div>
-      <button id="loveBtn" class="heart" title="Favorite this track" onclick="toggleLove()">♥</button>
+    <div class="np-main">
+      <img id="npArt" class="np-art" alt="" onload="this.classList.add('show')"
+        onerror="this.classList.remove('show')">
+      <div class="np-meta">
+        <div class="np-titlerow">
+          <div id="npTitle" class="np-title">Nothing playing</div>
+          <button id="loveBtn" class="heart" title="Favorite this track" onclick="toggleLove()">♥</button>
+        </div>
+        <div id="npArtist" class="np-artist"></div>
+      </div>
     </div>
-    <div id="npArtist" class="np-artist"></div>
     <div class="seek">
       <input class="scrub" id="scrub" type="range" min="0" max="1000" value="0"
         oninput="scrubLive()" onchange="scrubSet()">
@@ -667,6 +743,15 @@ function render(s){
   const fav = lovePending!==null ? lovePending : !!n.faved;
   $('loveBtn').classList.toggle('on', fav);
   $('loveBtn').style.visibility = n.title ? 'visible' : 'hidden';
+  // album artwork: refetch only when the track changes
+  const ak=(n.title||'')+'|'+(n.artist||'')+'|'+(n.album||'');
+  if(ak!==artKey){
+    artKey=ak;
+    const img=$('npArt');
+    img.classList.remove('show');
+    if(n.title){img.src='/api/art?t='+encodeURIComponent(TOKEN)+'&r='+Date.now();}
+    else{img.removeAttribute('src');}
+  }
   // seek/timeline: re-anchor to the server's truth each poll; the local ticker
   // advances the bar smoothly in between (poll is only ~1.4s).
   if(!scrubbing){
@@ -711,7 +796,7 @@ $('vol').addEventListener('mouseup',()=>{dragging=false});
 
 // ---- subs (Nexia, dB not %) ----
 let subDragging=false, subTimer=null, subPending=null, subMutePending=null, subPendingAt=0;
-let lovePending=null, lovePendingAt=0;
+let lovePending=null, lovePendingAt=0, artKey=null;
 async function toggleLove(){
   const on=!$('loveBtn').classList.contains('on');
   lovePending=on; lovePendingAt=Date.now();
