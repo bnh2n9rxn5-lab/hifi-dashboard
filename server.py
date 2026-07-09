@@ -33,7 +33,7 @@ import nexia  # Nexia PM sub-bus control (telnet, stdlib) — see nexia.py
 
 PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v8"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v9"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -125,17 +125,19 @@ NP_SCRIPT = '''tell application "Music"
     set al to ""
     set pos to 0
     set dur to 0
+    set fav to false
     try
         set t to name of current track
         set a to artist of current track
         set al to album of current track
         set dur to duration of current track
+        set fav to favorited of current track
     end try
     try
         set pp to player position
         if pp is not missing value then set pos to pp
     end try
-    return ps & "|" & t & "|" & a & "|" & al & "|" & pos & "|" & dur
+    return ps & "|" & t & "|" & a & "|" & al & "|" & pos & "|" & dur & "|" & fav
 end tell'''
 
 
@@ -153,15 +155,16 @@ def _num(x):
 
 def now_playing():
     empty = {"state": "notrunning", "title": "", "artist": "", "album": "",
-             "position": 0.0, "duration": 0.0}
+             "position": 0.0, "duration": 0.0, "faved": False}
     if not music_running():
         return empty
     rc, out, err = osa(NP_SCRIPT, timeout=10)
     if rc != 0:
         return dict(empty, state="unknown")
-    parts = (out.strip().split("|") + [""] * 6)[:6]
+    parts = (out.strip().split("|") + [""] * 7)[:7]
     return {"state": parts[0], "title": parts[1], "artist": parts[2], "album": parts[3],
-            "position": _num(parts[4]), "duration": _num(parts[5])}
+            "position": _num(parts[4]), "duration": _num(parts[5]),
+            "faved": parts[6].strip() == "true"}
 
 
 def music_volume():
@@ -296,6 +299,16 @@ def act_faves():
     return run([os.path.join(BINDIR, "dsp-faves")], timeout=30)
 
 
+def act_love(on):
+    """Mark/unmark the current track as a Favorite in Apple Music."""
+    val = "true" if on else "false"
+    rc, out, err = osa('tell application "Music" to set favorited of current track to %s' % val,
+                       timeout=10)
+    if rc != 0:
+        return (rc, "", (err or "no current track").strip())
+    return (0, "track %s" % ("favorited" if on else "unfavorited"), "")
+
+
 def act_sub_level(db):
     # UI speaks the original trim scale; the device runs SUB_MAKEUP lower.
     try:
@@ -403,6 +416,8 @@ class Handler(BaseHTTPRequestHandler):
             rc, out, err = act_sub_level(arg("db", "0"))
         elif p == "/api/sub-mute":
             rc, out, err = act_sub_mute(arg("on", "1") == "1")
+        elif p == "/api/love":
+            rc, out, err = act_love(arg("on", "1") == "1")
         elif p == "/api/play":
             rc, out, err = act_play(arg("name", ""))
         elif p == "/api/play-genre":
@@ -456,6 +471,12 @@ header{display:flex;align-items:center;justify-content:space-between;padding:4px
   box-shadow:0 10px 40px rgba(0,0,0,.35)}
 .np-state{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);font-weight:700}
 .np-title{font-size:23px;font-weight:750;margin:6px 0 2px;line-height:1.15}
+.np-titlerow{display:flex;align-items:center;gap:10px}
+.np-titlerow .np-title{flex:1;min-width:0}
+.heart{background:none;border:none;font-size:26px;line-height:1;padding:6px 4px;cursor:pointer;
+  color:#3a3f4d;transition:color .15s,transform .1s;-webkit-tap-highlight-color:transparent}
+.heart.on{color:#ff4d6d}
+.heart:active{transform:scale(1.25)}
 .np-artist{color:var(--dim);font-size:15px}
 .seek{margin-top:16px}
 .scrub{appearance:none;-webkit-appearance:none;width:100%;height:6px;border-radius:6px;outline:none;cursor:pointer;
@@ -527,7 +548,10 @@ select{width:100%;padding:13px;border-radius:13px;background:rgba(255,255,255,.0
 
   <div class="card">
     <div id="npState" class="np-state">—</div>
-    <div id="npTitle" class="np-title">Nothing playing</div>
+    <div class="np-titlerow">
+      <div id="npTitle" class="np-title">Nothing playing</div>
+      <button id="loveBtn" class="heart" title="Favorite this track" onclick="toggleLove()">♥</button>
+    </div>
     <div id="npArtist" class="np-artist"></div>
     <div class="seek">
       <input class="scrub" id="scrub" type="range" min="0" max="1000" value="0"
@@ -639,6 +663,10 @@ function render(s){
   $('npTitle').textContent = n.title||'Nothing playing';
   $('npArtist').textContent = [n.artist,n.album].filter(Boolean).join(' · ');
   $('pp').textContent = st==='playing'?'⏸':'▶';
+  if(lovePending!==null && (!!n.faved===lovePending || Date.now()-lovePendingAt>4000)) lovePending=null;
+  const fav = lovePending!==null ? lovePending : !!n.faved;
+  $('loveBtn').classList.toggle('on', fav);
+  $('loveBtn').style.visibility = n.title ? 'visible' : 'hidden';
   // seek/timeline: re-anchor to the server's truth each poll; the local ticker
   // advances the bar smoothly in between (poll is only ~1.4s).
   if(!scrubbing){
@@ -683,6 +711,13 @@ $('vol').addEventListener('mouseup',()=>{dragging=false});
 
 // ---- subs (Nexia, dB not %) ----
 let subDragging=false, subTimer=null, subPending=null, subMutePending=null, subPendingAt=0;
+let lovePending=null, lovePendingAt=0;
+async function toggleLove(){
+  const on=!$('loveBtn').classList.contains('on');
+  lovePending=on; lovePendingAt=Date.now();
+  $('loveBtn').classList.toggle('on',on);
+  if(await post('/api/love?on='+(on?1:0))===false){lovePending=null;}
+}
 function subPct(v){return Math.max(0,Math.min(100,(v+18)/24*100));} // -18..+6 UI scale -> 0..100 (device = UI - 6)
 function subLive(v,silent){v=+v;$('sub').style.backgroundSize=subPct(v)+'% 100%';
   $('subVal').textContent=(v>0?'+':'')+v.toFixed(1)+' dB';}
