@@ -33,7 +33,7 @@ import nexia  # Nexia PM sub-bus control (telnet, stdlib) — see nexia.py
 
 PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v12"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v14"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -88,6 +88,25 @@ STATUS_RE = re.compile(
 def db_to_pct(db):
     # map -60..0 dB -> 0..100 (anything below -60 reads as silence)
     return max(0.0, min(100.0, (db + 60.0) / 60.0 * 100.0))
+
+
+# minidspd (already a LaunchAgent, com.minidsp.minidspd) serves levels over
+# HTTP in ~7ms — the fast path for meters. The CLI stays for writes/status;
+# it talks through the same daemon, so the two coexist.
+DSPD_URL = os.environ.get("DSPD_URL", "http://127.0.0.1:5380/devices/0")
+
+
+def dspd_levels():
+    """Input/output meters from minidspd's HTTP API (fast path, ~7ms)."""
+    try:
+        import urllib.request
+        with urllib.request.urlopen(DSPD_URL, timeout=0.8) as r:
+            d = json.load(r)
+        return {"ok": True,
+                "inputs": d.get("input_levels") or [],
+                "outputs": d.get("output_levels") or []}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:120]}
 
 
 def dsp_status():
@@ -478,6 +497,9 @@ def act_fix_audio():
     # nothing playing: meters would read noise floor either way — not an error
     diag = "src %s; Music %s; %s" % (dsp_status().get("source", "?"), state0, msg)
     return (0, "UNVERIFIED — reset done, nothing playing so meters can't confirm. Press play to check. (%s)" % diag, "")
+
+
+def act_love(on):
     """Mark/unmark the current track as a Favorite in Apple Music."""
     val = "true" if on else "false"
     rc, out, err = osa('tell application "Music" to set favorited of current track to %s' % val,
@@ -555,6 +577,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "unauthorized"}, 401)
         if u.path == "/api/status":
             return self._json(full_status())
+        if u.path == "/api/meters":
+            return self._json(dspd_levels())
         if u.path == "/api/art":
             data, mime = current_artwork()
             if not data:
@@ -575,6 +599,18 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"ok": False, "error": "not found"}, 404)
 
     def do_POST(self):
+        # A handler crash must answer with JSON, not a dropped connection —
+        # an empty reply reads as a generic "network error" on the client and
+        # hides the real fault (learned from the act_love NameError, v11-v13).
+        try:
+            return self._do_post()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return self._json({"ok": False, "err": "server error: %s: %s"
+                               % (type(e).__name__, e)}, 500)
+
+    def _do_post(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if not self._authed(q):
@@ -725,7 +761,9 @@ header{display:flex;align-items:center;justify-content:space-between;padding:4px
 .meters{display:flex;flex-direction:column;gap:9px}
 .meter{display:flex;align-items:center;gap:10px}
 .meter .mlab{width:34px;font-size:11px;color:var(--dim);font-weight:700}
-.bar{flex:1;height:9px;border-radius:6px;background:rgba(255,255,255,.07);overflow:hidden}
+.bar{flex:1;height:9px;border-radius:6px;background:rgba(255,255,255,.07);overflow:hidden;position:relative}
+.bar .peak{position:absolute;top:0;bottom:0;width:2px;background:rgba(255,255,255,.85);left:0;opacity:0}
+.bar .peak.on{opacity:.9}
 .fill{height:100%;width:0;border-radius:6px;
   background:linear-gradient(90deg,#22d3ee,#34d399 55%,#fbbf24 80%,#fb7185);transition:width .12s linear}
 select{width:100%;padding:13px;border-radius:13px;background:rgba(255,255,255,.05);color:var(--txt);
@@ -853,12 +891,48 @@ function buildMeters(s){
     ['1',s.output_pct&&s.output_pct[0]],['2',s.output_pct&&s.output_pct[1]],
     ['3',s.output_pct&&s.output_pct[2]],['4',s.output_pct&&s.output_pct[3]]];
   if(!m.dataset.built){
-    m.innerHTML=rows.map(r=>`<div class="meter"><div class="mlab">${r[0]}</div><div class="bar"><div class="fill"></div></div></div>`).join('');
+    m.innerHTML=rows.map(r=>`<div class="meter"><div class="mlab">${r[0]}</div><div class="bar"><div class="fill"></div><div class="peak"></div></div></div>`).join('');
     m.dataset.built='1';
   }
+  if(Date.now()-mLastOk<1200) return;   // fast meter loop owns the bars
   const fills=m.querySelectorAll('.fill');
   rows.forEach((r,i)=>{fills[i].style.width=(r[1]||0)+'%'});
 }
+
+// ---- fast meters: 8Hz poll of minidspd via /api/meters + ballistics ----
+// instant attack, ~1.5s full-scale decay, peak-hold marker (1.5s hold, then falls)
+let mTarget=[0,0,0,0,0,0], mDisp=[0,0,0,0,0,0], mPeak=[0,0,0,0,0,0],
+    mPeakAt=[0,0,0,0,0,0], mLastOk=0, mLastFrame=0;
+const dbPct=db=>Math.max(0,Math.min(100,(db+60)/60*100));
+async function pollMeters(){
+  try{
+    const r=await fetch('/api/meters',{headers:hdrs()});
+    const j=await r.json();
+    if(j.ok){
+      mLastOk=Date.now();
+      mTarget=[...(j.inputs||[]).slice(0,2),...(j.outputs||[]).slice(0,4)].map(dbPct);
+    }
+  }catch(e){}
+}
+function meterFrame(ts){
+  requestAnimationFrame(meterFrame);
+  const m=$('meters');
+  if(!m||!m.dataset.built||Date.now()-mLastOk>1200) return;  // fast path dead -> slow render owns bars
+  const dt=Math.min(0.1,(ts-mLastFrame)/1000||0.016); mLastFrame=ts;
+  const DECAY=100/1.5, PEAK_HOLD=1500, PEAK_FALL=100/1.0;
+  const fills=m.querySelectorAll('.fill'), peaks=m.querySelectorAll('.peak');
+  for(let i=0;i<6;i++){
+    const t=mTarget[i]||0;
+    mDisp[i]=t>=mDisp[i]?t:Math.max(t,mDisp[i]-DECAY*dt);          // instant attack, timed decay
+    if(t>=mPeak[i]){mPeak[i]=t;mPeakAt[i]=ts;}
+    else if(ts-mPeakAt[i]>PEAK_HOLD){mPeak[i]=Math.max(t,mPeak[i]-PEAK_FALL*dt);}
+    if(fills[i])fills[i].style.width=mDisp[i]+'%';
+    if(peaks[i]){peaks[i].style.left='calc('+mPeak[i]+'% - 2px)';
+      peaks[i].classList.toggle('on',mPeak[i]>1);}
+  }
+}
+setInterval(pollMeters,125);
+requestAnimationFrame(meterFrame);
 
 function render(s){
   if(!s){$('dot').classList.remove('live');return}
