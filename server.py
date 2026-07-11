@@ -33,7 +33,7 @@ import nexia  # Nexia PM sub-bus control (telnet, stdlib) — see nexia.py
 
 PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v11"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v12"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -425,21 +425,59 @@ def _bounce_output_device():
         return False, "bounce failed: %s" % e
 
 
+NOISE_FLOOR_DB = -70.0   # meters above this = real signal (floor sits ~-86)
+
+
+def music_player_state():
+    """Apple Music player state: playing/paused/stopped, or 'unknown'."""
+    if not music_running():
+        return "notrunning"
+    rc, out, _ = osa('tell application "Music" to (get player state) as string', timeout=8)
+    return out.strip() if rc == 0 and out.strip() else "unknown"
+
+
 def act_fix_audio():
-    """Run the audio-path recovery sequence and report the result."""
-    before = dsp_status().get("inputs") or []
+    """Run the audio-path recovery sequence; verify only against a live source.
+
+    Meters at noise floor mean nothing when nothing is playing, so the verdict
+    is three-state: VERIFIED_OK (playing + signal), VERIFIED_FAIL (playing but
+    still at noise floor), UNVERIFIED (no playback — reset ran, can't judge).
+    Never auto-starts playback: a repair button must not surprise-blast the PA.
+    """
+    state0 = music_player_state()
+    st = dsp_status()
+    before = st.get("inputs") or []
+
+    # reset sequence
     run([MINIDSP, "source", "usb"], timeout=10)
     time.sleep(1.0)
     run([MINIDSP, "source", "analog"], timeout=10)
     ok, msg = _bounce_output_device()
-    time.sleep(1.8)
-    after = dsp_status().get("inputs") or []
-    live = any(x > -75.0 for x in after)
-    report = "in %s -> %s dB; %s" % (
-        [round(x, 1) for x in before], [round(x, 1) for x in after], msg)
-    if live:
-        return (0, "audio path reset — signal present (%s)" % report, "")
-    return (1, "", "reset ran but inputs still silent (%s) — check the E70 panel/cables" % report)
+
+    # invariant: a reset can never strand the source selection. Should already
+    # be analog; note it in the report if this actually corrected anything.
+    src_check = dsp_status().get("source", "?")
+    run([MINIDSP, "source", "analog"], timeout=10)
+    if str(src_check).lower() != "analog":
+        msg += "; source was %s — corrected to analog" % src_check
+
+    if state0 == "playing":
+        # resume in case the device bounce stalled the stream, let the
+        # pipeline refill, then judge the meters against a real signal.
+        osa('tell application "Music" to play', timeout=8)
+        time.sleep(2.5)
+        st2 = dsp_status()
+        after = st2.get("inputs") or []
+        diag = "in %s -> %s dB; src %s; Music %s; %s" % (
+            [round(x, 1) for x in before], [round(x, 1) for x in after],
+            st2.get("source", "?"), music_player_state(), msg)
+        if any(x > NOISE_FLOOR_DB for x in after):
+            return (0, "VERIFIED_OK — audio path reset, signal present (%s)" % diag, "")
+        return (1, "", "VERIFIED_FAIL — playback running but inputs still at noise floor (%s) — check the E70 panel/cables" % diag)
+
+    # nothing playing: meters would read noise floor either way — not an error
+    diag = "src %s; Music %s; %s" % (dsp_status().get("source", "?"), state0, msg)
+    return (0, "UNVERIFIED — reset done, nothing playing so meters can't confirm. Press play to check. (%s)" % diag, "")
     """Mark/unmark the current track as a Favorite in Apple Music."""
     val = "true" if on else "false"
     rc, out, err = osa('tell application "Music" to set favorited of current track to %s' % val,
@@ -695,7 +733,8 @@ select{width:100%;padding:13px;border-radius:13px;background:rgba(255,255,255,.0
 .muted{color:var(--dim);font-size:12px;margin-top:8px;text-align:center}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(120%);
   background:rgba(20,24,33,.95);border:1px solid var(--line);padding:11px 18px;border-radius:14px;
-  font-size:14px;font-weight:600;transition:.3s;backdrop-filter:blur(12px);max-width:90%;z-index:9}
+  font-size:14px;font-weight:600;transition:.3s;backdrop-filter:blur(12px);max-width:90%;z-index:9;
+  overflow-wrap:break-word;text-align:center;line-height:1.35}
 .toast.show{transform:translateX(-50%) translateY(0)}
 .toast.err{border-color:var(--bad);color:var(--bad)}
 </style>
@@ -796,8 +835,8 @@ const APP_VERSION = "__APP_VERSION__";
 let dragging = false, lastPreset = -1;
 
 function $(id){return document.getElementById(id)}
-function toast(msg,err){const t=$('toast');t.textContent=msg;t.className='toast show'+(err?' err':'');
-  clearTimeout(t._t);t._t=setTimeout(()=>t.className='toast',1900)}
+function toast(msg,err,ms){const t=$('toast');t.textContent=msg;t.className='toast show'+(err?' err':'');
+  clearTimeout(t._t);t._t=setTimeout(()=>t.className='toast',ms||1900)}
 
 function buildPresets(){
   const g=$('presets');g.innerHTML='';
@@ -894,7 +933,7 @@ async function fixAudio(){
     const r=await fetch('/api/fix-audio',{method:'POST',headers:hdrs()});
     const j=await r.json();
     if(j.status)render(j.status);
-    toast((j.ok?(j.out||'audio path reset'):(j.err||'reset failed')).slice(0,110),!j.ok);
+    toast(j.ok?(j.out||'audio path reset'):(j.err||'reset failed'),!j.ok,8000); // full text, wraps, 8s to read
   }catch(e){toast('network error',true)}
   b.disabled=false;b.textContent=t;
 }
