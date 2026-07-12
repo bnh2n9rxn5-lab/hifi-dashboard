@@ -325,7 +325,10 @@ def act_play_genre(name):
 
 
 def act_play_artist(name):
-    return run([os.path.join(BINDIR, "dsp-play-artist"), name], timeout=30)
+    # -a = the artist's whole library catalogue (shuffled), not just favourites.
+    # Favourites-only queues could be a single track, after which Music's
+    # Autoplay wandered off to random picks — the "one song then chaos" bug.
+    return run([os.path.join(BINDIR, "dsp-play-artist"), "-a", name], timeout=60)
 
 
 def act_faves():
