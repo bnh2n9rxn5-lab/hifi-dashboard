@@ -1,0 +1,67 @@
+# MB Hi-Fi — hifi-dashboard
+
+The **"MB Hi-Fi"** app: a phone-friendly web remote for the listening room. One
+dependency-free Python file (`server.py`, stdlib only) serving a dark PWA that
+drives three things — **Apple Music** (transport, Now Playing, artwork, favourite,
+search, playlist/artist/genre pickers) via AppleScript, the **miniDSP** via the
+`minidsp` CLI, and the **Biamp Nexia** sub bus via `nexia.py`. Sibling project
+`~/minidsp-dash/minidsp-dash` is the public, DSP-only cousin; this one stays
+unpublished (`origin` is a private backup remote — push after commits).
+
+Runs as LaunchAgent `com.hifi.dashboard` on port 8765, token in the plist at
+`~/Library/LaunchAgents/com.hifi.dashboard.plist`. Log: `~/Library/Logs/hifi-dashboard.log`
+(client-disconnect tracebacks in there are normal — phones closing sockets).
+
+## Two rules that will waste your afternoon if you skip them
+
+**1. Restart after every `server.py` edit.** There is no watch-path and no
+auto-reload; the process runs whatever it loaded at launch.
+
+    launchctl kickstart -k gui/$(id -u)/com.hifi.dashboard
+
+On 2026-08-22 the live process was six weeks stale — older than the commit fixing
+the very bug being reported — and presented as Apple Music misbehaving. When a
+symptom contradicts the source, check `ps -Ao pid,lstart | grep server.py`
+against the file mtime and `git log` **before** debugging the code.
+
+**2. Bump `APP_VERSION` on any served-page change.** Phones cache the page hard;
+the client self-reloads only when its stamp differs from `/api/status`. A page
+change without a bump means phones keep the old UI forever.
+
+## Helpers
+
+`server.py` shells out to `/usr/local/bin/dsp-*` (`BINDIR`). Tracked copies live
+in `helpers/` — they are inert until deployed:
+
+    cp helpers/dsp-* /usr/local/bin/ && chmod 755 /usr/local/bin/dsp-*
+
+## Apple Music AppleScript, learned the hard way
+
+- **Favourite** is `favorited of current track`. The old `loved` property errors.
+- **Artwork** can't be returned by osascript; the script writes `raw data of
+  artwork 1` to a temp file and `/api/art` serves it.
+- **Never queue an anonymous track list** (`play (every track whose ...)`) — there
+  is no `current playlist`, so `back track` can only ever restart the current
+  song. Build a real "HiFi Queue" user playlist instead. `dsp-faves` is still on
+  the old pattern and still has the broken prev button.
+- **`duplicate` needs a SPECIFIER**, not an evaluated list: `duplicate (every
+  track ... whose album is x) to user playlist "HiFi Queue"` works; a list
+  variable fails with -10006. Persistent IDs *do* survive duplication.
+- **Don't play a playlist you just built.** Music takes the current-playlist
+  change but ignores the track reference and opens at track 1. Settle first, then
+  confirm you landed and re-issue. Cost a whole debugging round on 2026-08-22.
+- **`whose name is (name of t)` errors -1728** — the inner property isn't
+  evaluated inside the filter. Assign it to a variable first.
+- **Music can wedge against Apple Events entirely** (-1712 on even `player state`,
+  every call, indefinitely). Only a Music restart clears it. `run()` kills
+  osascript on timeout but Music keeps executing the event it already accepted,
+  so a timed-out queue build carries on and plays half-built.
+- **UI-scripting Music's menus is unavailable** — osascript has no assistive
+  access and granting Accessibility is the user's call.
+
+## Library shape (2026-08-22)
+
+7505 tracks, 1566 artists, and a very long tail: **64.7% of artists own exactly
+one track, 79.8% own two or fewer.** This is why artist picks need album context
+(`MINQ`/`MAXALB` in `dsp-play-artist`) — an artist-pure queue drains in a song
+and Autoplay takes over. Assume any per-artist feature hits this distribution.
