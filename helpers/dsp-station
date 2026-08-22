@@ -1,0 +1,39 @@
+#!/bin/sh
+# Play an Apple Music STATION (streams beyond your library), via `open location`
+# (verified to auto-play). Two ways to call it:
+#   dsp-station "https://music.apple.com/.../station/.../ra.123..."   any station URL
+#   dsp-station <shortname>                                           a name from the map
+#
+# WHY a hand-kept map: Apple exposes no public way to turn an arbitrary artist or
+# genre into a station URL (that needs the MusicKit developer API). So for your
+# go-to stations: open the station in Music or music.apple.com, copy its share
+# URL, and add a "shortname|URL" line below.
+#
+# For "more like THIS artist/genre" beyond your library WITHOUT a station URL,
+# turn on Autoplay (the infinity icon) once in Music's "Playing Next" — then
+# dsp-play-artist / dsp-play-genre keep going with similar streamed tracks.
+
+# --- edit this map: one "shortname|station URL" per line ---
+STATIONS='
+apple1|https://music.apple.com/us/station/apple-music-1/ra.978194965
+'
+
+arg="$1"
+if [ -z "$arg" ]; then
+  echo "usage: dsp-station <station-url | shortname>"
+  echo "known shortnames:"
+  printf '%s\n' "$STATIONS" | sed '/^[[:space:]]*$/d' | cut -d'|' -f1 | sed 's/^/  /'
+  exit 2
+fi
+
+case "$arg" in
+  http*://*) url="$arg" ;;
+  *)
+    url=$(printf '%s\n' "$STATIONS" | sed '/^[[:space:]]*$/d' \
+          | awk -F'|' -v k="$arg" '$1==k{print $2; exit}')
+    [ -z "$url" ] && { echo "unknown station: $arg (run with no args to list)"; exit 2; }
+    ;;
+esac
+
+osascript -e "tell application \"Music\" to open location \"$url\""
+echo "opened station: $url"

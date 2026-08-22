@@ -1,0 +1,26 @@
+#!/bin/sh
+# "Choose Music" by GENRE, favourites-first: lists the genres of your FAVOURITED
+# tracks, ranked by how many favourites fall in each (most first). One genre per
+# line; feed the chosen line to `dsp-play-genre`.
+#   -c   append the favourite count to each line (human/debug view only).
+showcount=0
+[ "$1" = "-c" ] && showcount=1
+
+emit() {
+  osascript <<'APPLESCRIPT'
+tell application "Music"
+  set g to genre of (every track of library playlist 1 whose favorited is true)
+  set AppleScript's text item delimiters to linefeed
+  return (g as text)
+end tell
+APPLESCRIPT
+}
+
+# tally descending; empty genre -> "(no genre)"
+if [ "$showcount" = 1 ]; then
+  emit | sed 's/^[[:space:]]*$/(no genre)/' | sort | uniq -c | sort -rn \
+    | awk '{c=$1; $1=""; sub(/^[ \t]+/,""); printf "%s  (%s)\n", $0, c}'
+else
+  emit | sed 's/^[[:space:]]*$/(no genre)/' | sort | uniq -c | sort -rn \
+    | awk '{$1=""; sub(/^[ \t]+/,""); print}'
+fi

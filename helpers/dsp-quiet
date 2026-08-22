@@ -1,0 +1,5 @@
+#!/bin/sh
+# Quiet listening level.
+# Master volume via Apple Music app volume — pre-split, so mains + subs stay balanced.
+# See dsp-loud for why miniDSP gain must NOT be used as the volume control.
+osascript -e 'tell application "Music" to set sound volume to 35'

@@ -1,0 +1,153 @@
+#!/bin/sh
+# Play tracks of a artist, favourites-first. Shuffle on.
+#   (default)    your FAVOURITED tracks for that artist
+#   -a / --all   every matching track you own — favourites plus the rest
+#   -n           dry run: report the track count, don't change playback
+# Name is matched exactly (case-insensitive), as listed by `dsp-artists`.
+#
+# Plays via the "HiFi Queue" temp playlist (rebuilt each run) rather than an
+# anonymous track-list queue: with a real current playlist, Music's native
+# previous/next work, so the dashboard's back button can jump BETWEEN tracks.
+# duplicate uses the SPECIFIER form (an evaluated track list fails, -10006),
+# with a per-track fallback that skips any track that won't copy.
+#
+# THIN ARTISTS GET ALBUM CONTEXT. 65% of this library's 1566 artists own exactly
+# one track and 80% own two or fewer, so an artist-pure queue drained in a song
+# or two and Music's Autoplay carried on with random picks — the "tracklist
+# quickly diverges" complaint. Below MINQ own tracks the queue is seeded with
+# the albums those tracks sit on (at most MAXALB of them, so the build stays
+# inside the dashboard's timeout) and plays FORWARD with shuffle off, starting
+# on the artist's own track — the pick is honoured and the album carries on
+# after it, the same trick the dashboard's search -> play-track path uses.
+# At or above MINQ the catalogue shuffle already outlasts a listening session,
+# so that path is untouched. Note the seeded albums are whole albums: for a
+# one-track artist on a compilation, that compilation is what follows.
+MINQ=12
+MAXALB=4
+
+dry=0; allmode=0
+while [ "${1#-}" != "$1" ]; do
+  case "$1" in
+    -n) dry=1 ;;
+    -a|--all) allmode=1 ;;
+    --) shift; break ;;
+    *) echo "unknown flag: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+[ -z "$1" ] && { echo "usage: dsp-play-artist [-n] [-a] <artist>" >&2; exit 2; }
+
+osascript - "$dry" "$allmode" "$1" "$MINQ" "$MAXALB" <<'APPLESCRIPT'
+on run argv
+  set dry to (item 1 of argv) is "1"
+  set allMode to (item 2 of argv) is "1"
+  set q to item 3 of argv
+  set minq to (item 4 of argv) as integer
+  set maxalb to (item 5 of argv) as integer
+  if allMode then
+    set lbl to " (all)"
+  else
+    set lbl to " (favourites)"
+  end if
+  tell application "Music"
+    if allMode then
+      set src to (every track of library playlist 1 whose artist is q)
+    else
+      set src to (every track of library playlist 1 whose artist is q and favorited is true)
+    end if
+    set c to count src
+    if c is 0 then return "NOTHING FOUND for artist: " & q
+
+    -- too few of their own tracks to fill a queue? collect the albums to seed
+    set useAlbums to (c < minq)
+    set albs to {}
+    if useAlbums then
+      repeat with tr in src
+        set a to (album of tr) as text
+        if a is not "" and albs does not contain a then
+          set end of albs to a
+          if (count albs) is maxalb then exit repeat
+        end if
+      end repeat
+      if (count albs) is 0 then set useAlbums to false
+    end if
+
+    if dry then
+      if useAlbums then
+        set n to 0
+        repeat with a in albs
+          set n to n + (count (every track of library playlist 1 whose album is (a as text)))
+        end repeat
+        return "WOULD PLAY " & n & " tracks — " & q & lbl & ", album context (" & c & " own, " & (count albs) & " album(s))"
+      end if
+      return "WOULD PLAY " & c & " tracks — " & q & lbl
+    end if
+
+    if not (exists user playlist "HiFi Queue") then
+      make new user playlist with properties {name:"HiFi Queue"}
+    end if
+    delete every track of user playlist "HiFi Queue"
+
+    if useAlbums then
+      repeat with a in albs
+        try
+          duplicate (every track of library playlist 1 whose album is (a as text)) to user playlist "HiFi Queue"
+        on error
+          repeat with tr in (every track of library playlist 1 whose album is (a as text))
+            try
+              duplicate tr to user playlist "HiFi Queue"
+            end try
+          end repeat
+        end try
+      end repeat
+    else
+      try
+        if allMode then
+          duplicate (every track of library playlist 1 whose artist is q) to user playlist "HiFi Queue"
+        else
+          duplicate (every track of library playlist 1 whose artist is q and favorited is true) to user playlist "HiFi Queue"
+        end if
+      end try
+    end if
+
+    -- specifier form refused the copy (mixed file/shared tracks): per-track retry
+    if (count tracks of user playlist "HiFi Queue") is 0 then
+      repeat with tr in src
+        try
+          duplicate tr to user playlist "HiFi Queue"
+        end try
+      end repeat
+      set useAlbums to false
+    end if
+
+    set n to count tracks of user playlist "HiFi Queue"
+    if n is 0 then return "QUEUE BUILD FAILED for artist: " & q
+
+    if useAlbums then
+      -- start ON the artist's own track so the pick is honoured, then let the
+      -- album run on in order instead of draining into Autoplay
+      set shuffle enabled to false
+      set t1 to item 1 of src
+      set qt to missing value
+      try
+        set qt to (first track of user playlist "HiFi Queue" whose persistent ID is (persistent ID of t1))
+      end try
+      if qt is missing value then
+        try
+          set qt to (first track of user playlist "HiFi Queue" whose name is (name of t1))
+        end try
+      end if
+      if qt is missing value then
+        play user playlist "HiFi Queue"
+      else
+        play qt
+      end if
+      return "PLAYING " & n & " tracks — " & q & lbl & ", album context"
+    else
+      set shuffle enabled to true
+      play user playlist "HiFi Queue"
+      return "PLAYING " & n & " tracks — " & q & lbl
+    end if
+  end tell
+end run
+APPLESCRIPT

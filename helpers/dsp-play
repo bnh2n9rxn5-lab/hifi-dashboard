@@ -1,0 +1,59 @@
+#!/bin/sh
+# Choose what Apple Music plays, by playlist name. Called over SSH from the iPhone
+# (same channel as the dsp-* helpers). This ONLY selects/starts playback — it does
+# not touch volume or the mains/sub balance (see dsp-loud/-medium/-quiet and the
+# VOLUME MODEL) and does not power the system (use dsp-start-listening for that).
+#
+# Usage:
+#   dsp-play "Relaxing Piano"   play first playlist matching the name, shuffle on
+#   dsp-play -n "Relaxing"      dry run: report which playlist WOULD play, no change
+#   dsp-play -s "Yoga"          sequential (shuffle OFF), else shuffle is ON
+#
+# Matching is case-insensitive: exact name first, otherwise the first playlist whose
+# name CONTAINS the text. Prints "PLAYING: <name>" / "WOULD PLAY: <name>" / "NOT
+# FOUND: <text>" so the iPhone shortcut can show the result.
+dry=0
+shuf=true
+while [ "${1#-}" != "$1" ]; do
+  case "$1" in
+    -n) dry=1 ;;
+    -s) shuf=false ;;
+    --) shift; break ;;
+    *)  echo "unknown flag: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+[ -z "$1" ] && { echo "usage: dsp-play [-n] [-s] <playlist name>" >&2; exit 2; }
+
+osascript - "$dry" "$shuf" "$1" <<'APPLESCRIPT'
+on run argv
+  set dry to (item 1 of argv) is "1"
+  set wantShuffle to (item 2 of argv) is "true"
+  set q to item 3 of argv
+  tell application "Music"
+    set hit to missing value
+    -- exact (case-insensitive) match wins
+    repeat with p in user playlists
+      if (name of p as text) is q then
+        set hit to p
+        exit repeat
+      end if
+    end repeat
+    -- otherwise first playlist whose name contains the text
+    if hit is missing value then
+      repeat with p in user playlists
+        if (name of p as text) contains q then
+          set hit to p
+          exit repeat
+        end if
+      end repeat
+    end if
+    if hit is missing value then return "NOT FOUND: " & q
+    set nm to (name of hit as text)
+    if dry then return "WOULD PLAY: " & nm
+    set shuffle enabled to wantShuffle
+    play hit
+    return "PLAYING: " & nm
+  end tell
+end run
+APPLESCRIPT

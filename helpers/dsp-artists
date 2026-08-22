@@ -1,0 +1,24 @@
+#!/bin/sh
+# "Choose Music" by ARTIST: lists EVERY artist in the library, alphabetical,
+# one per line; feed the chosen line to `dsp-play-artist`.
+#   -c   append each artist's library track count (human/debug view only).
+showcount=0
+[ "$1" = "-c" ] && showcount=1
+
+emit() {
+  osascript <<'APPLESCRIPT'
+tell application "Music"
+  set a to artist of every track of library playlist 1
+  set AppleScript's text item delimiters to linefeed
+  return (a as text)
+end tell
+APPLESCRIPT
+}
+
+# unique, alphabetical (case-insensitive); empty artist -> "(unknown artist)"
+if [ "$showcount" = 1 ]; then
+  emit | sed 's/^[[:space:]]*$/(unknown artist)/' | sort -f | uniq -c \
+    | awk '{c=$1; $1=""; sub(/^[ \t]+/,""); printf "%s  (%s)\n", $0, c}'
+else
+  emit | sed 's/^[[:space:]]*$/(unknown artist)/' | sort -fu
+fi

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Restart the miniDSP control daemon for normal CLI / iPhone control.
+# Quit MiniDSP Device Console first — it and the daemon can't share the USB device.
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.minidsp.minidspd.plist" 2>/dev/null
+launchctl enable "gui/$(id -u)/com.minidsp.minidspd" 2>/dev/null
+echo "miniDSP daemon (re)started — phone/CLI control restored."

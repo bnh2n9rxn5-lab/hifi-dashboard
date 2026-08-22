@@ -1,0 +1,20 @@
+#!/bin/sh
+# Play your FAVOURITED tracks (every track flagged Favourite in the library),
+# shuffle on. This is the favourites-first "just play what I love" option.
+#   -n   dry run: report how many would play, don't change playback.
+dry=0
+[ "$1" = "-n" ] && dry=1
+
+osascript - "$dry" <<'APPLESCRIPT'
+on run argv
+  set dry to (item 1 of argv) is "1"
+  tell application "Music"
+    set c to count (every track of library playlist 1 whose favorited is true)
+    if c is 0 then return "NO FAVOURITES FOUND"
+    if dry then return "WOULD PLAY " & c & " favourited tracks"
+    set shuffle enabled to true
+    play (every track of library playlist 1 whose favorited is true)
+    return "PLAYING " & c & " favourited tracks"
+  end tell
+end run
+APPLESCRIPT

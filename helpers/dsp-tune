@@ -1,0 +1,6 @@
+#!/bin/sh
+# Stop the miniDSP control daemon so the MiniDSP Device Console can grab the USB
+# device for tuning. (The daemon and Device Console can't share the device.)
+launchctl bootout "gui/$(id -u)/com.minidsp.minidspd" 2>/dev/null
+echo "miniDSP daemon stopped. You can now open MiniDSP Device Console to tune."
+echo "Run 'dsp-resume' when you're done to restore phone/CLI control."

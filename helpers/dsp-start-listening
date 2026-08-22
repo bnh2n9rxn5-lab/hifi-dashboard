@@ -1,0 +1,21 @@
+#!/bin/sh
+# Mac-side "Start Listening": after the Meross plug powers the DSPs + amps on, wait
+# until the daemon re-acquires the miniDSP (retries up to ~25s), load the mains
+# preset, unmute, and set a medium starting volume via the Apple Music app volume.
+#
+# VOLUME MODEL (don't undo): overall volume = Apple Music app volume, which is
+# digital/pre-split so it scales mains (miniDSP) AND subs (Nexia PM -> Crest CA12)
+# together. The miniDSP MASTER GAIN is a FIXED mains/sub BALANCE trim — set it once
+# by ear in Device Console and leave it; this script deliberately does NOT change it.
+for i in $(seq 1 25); do
+  /usr/local/bin/minidsp config 0 >/dev/null 2>&1 && break
+  sleep 1
+done
+# If the miniDSP does NOT retain its master gain across the plug power-cycle, the
+# mains/sub balance would reset on each Start. After calibrating the balance value,
+# set it here and UNCOMMENT to re-assert it every start (harmless if the device does
+# retain it). Check after a Start whether the gain held to decide if you need this:
+# /usr/local/bin/minidsp gain -- -12
+/usr/local/bin/minidsp mute off
+osascript -e 'tell application "Music" to set sound volume to 60'
+/usr/local/bin/minidsp 2>&1 | head -1

@@ -1,0 +1,69 @@
+#!/bin/sh
+# List your playlists, ranked by how many FAVOURITED tracks each contains (most
+# first) — so playlists built around your favourites float to the top, and the
+# whole-library / no-favourite playlists drop out. (Favourites themselves are
+# their own dimension: see `dsp-faves`.)
+# One playlist name per line; feed the chosen line straight to `dsp-play`.
+#
+# Flags:
+#   -c   also append the favourite count to each line (human/debug view only —
+#        do NOT pipe this form into dsp-play; the "(N)" suffix won't match).
+showcount=0
+[ "$1" = "-c" ] && showcount=1
+
+osascript - "$showcount" <<'APPLESCRIPT'
+on run argv
+  set showCount to (item 1 of argv) is "1"
+  tell application "Music"
+    set libFav to count (every track of library playlist 1 whose favorited is true)
+    set plNames to {}
+    set favCounts to {}
+    repeat with p in user playlists
+      set nm to (name of p as text)
+      if (special kind of p as text) is "Music" then
+        -- whole-library playlist: skip
+      else if nm is "Favourite Songs" then
+        -- pinned to the top separately: skip here
+      else
+        set fc to 0
+        try
+          set fc to count (every track of p whose favorited is true)
+        end try
+        -- keep playlists that reference favourites, but not the "everything"-sized
+        -- ones, and dedupe repeated names
+        if fc > 0 and fc < libFav and (plNames does not contain nm) then
+          set end of plNames to nm
+          set end of favCounts to fc
+        end if
+      end if
+    end repeat
+    -- selection sort by favourite count, descending
+    set n to count plNames
+    repeat with i from 1 to (n - 1)
+      set maxI to i
+      repeat with j from (i + 1) to n
+        if (item j of favCounts) > (item maxI of favCounts) then set maxI to j
+      end repeat
+      if maxI is not i then
+        set tmpN to item i of plNames
+        set item i of plNames to item maxI of plNames
+        set item maxI of plNames to tmpN
+        set tmpC to item i of favCounts
+        set item i of favCounts to item maxI of favCounts
+        set item maxI of favCounts to tmpC
+      end if
+    end repeat
+    -- ranked playlists
+    set outLines to {}
+    repeat with i from 1 to n
+      if showCount then
+        set end of outLines to (item i of plNames) & "  (" & (item i of favCounts) & ")"
+      else
+        set end of outLines to (item i of plNames)
+      end if
+    end repeat
+    set AppleScript's text item delimiters to linefeed
+    return (outLines as text)
+  end tell
+end run
+APPLESCRIPT

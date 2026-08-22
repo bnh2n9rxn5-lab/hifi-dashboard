@@ -1,0 +1,7 @@
+#!/bin/sh
+# Loud listening level. Sets the MASTER volume via the Apple Music app volume,
+# which is applied digitally BEFORE the DAC and the mains/sub split, so it scales
+# the mains (miniDSP) and the subs (Nexia/Crest) together and keeps them balanced.
+# Do NOT use miniDSP gain for volume — that moves only the mains and breaks the
+# sub balance. (Music volume, not system volume, so macOS alerts stay independent.)
+osascript -e 'tell application "Music" to set sound volume to 85'
