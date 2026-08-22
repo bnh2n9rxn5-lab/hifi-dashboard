@@ -8,6 +8,15 @@ search, playlist/artist/genre pickers) via AppleScript, the **miniDSP** via the
 `~/minidsp-dash/minidsp-dash` is the public, DSP-only cousin; this one stays
 unpublished (`origin` is a private backup remote — push after commits).
 
+Also listens on **TLS at 8766** (`DSP_WEB_TLS_PORT`). That exists for one reason: the
+SPL meter needs the phone mic, `getUserMedia` needs a secure context, and iOS blocks
+it over plain http. Plain http stays up unchanged so bookmarks and QR codes keep
+working, and missing certs are non-fatal — everything but the SPL meter works without
+them. `./make-cert.sh` issues a root CA plus the leaf it signs (SAN entries, SHA-256,
+serverAuth EKU, <=398 days — all four required by iOS 13+). Two certs, not one, so a
+DHCP change needs only a new leaf and no re-install on the phone. `GET /ca.crt` serves
+the root so the phone installs it by visiting a URL; `certs/` is gitignored.
+
 Runs as LaunchAgent `com.hifi.dashboard` on port 8765, token in the plist at
 `~/Library/LaunchAgents/com.hifi.dashboard.plist`. Log: `~/Library/Logs/hifi-dashboard.log`
 (client-disconnect tracebacks in there are normal — phones closing sockets).
@@ -58,6 +67,22 @@ in `helpers/` — they are inert until deployed:
   so a timed-out queue build carries on and plays half-built.
 - **UI-scripting Music's menus is unavailable** — osascript has no assistive
   access and granting Accessibility is the user's call.
+
+## SPL meter
+
+Weighting is A/C/Z as biquad sections, normalised to 0 dB at 1 kHz by measuring the
+chain's own response there rather than hardcoding the book constants. Time weighting
+is an exponential average of **power** (IEC fast 125 ms / slow 1 s) — averaging dB
+skews every reading low. Verified against the published curves at 48 kHz: within
+0.11 dB from 31.5 Hz to 2 kHz, +0.65 at 8 kHz, -3.1 at 16 kHz (bilinear warping near
+Nyquist, immaterial on a broadband reading).
+
+Two traps it handles rather than hides: a mic reports **dBFS, not SPL**, so it reads
+"uncalibrated - relative only" until calibrated against a reference; and **iOS may
+ignore the AGC/NS/AEC constraints**, so the track settings are re-read after the grant
+and a warning shown if the OS is still processing the signal. Expect soft numbers at
+the extremes regardless — iPhone mics roll off bass and limit around 100-105 dB SPL,
+so dBC is the more informative reading with subs running.
 
 ## Library shape (2026-08-22)
 
