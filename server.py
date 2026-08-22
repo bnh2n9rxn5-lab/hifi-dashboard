@@ -6,7 +6,7 @@ Talks to the minidsp daemon (via the `minidsp` CLI) and Apple Music (via osascri
 No third-party dependencies; uses the Python stdlib only.
 
   Run:   python3 server.py            # binds 0.0.0.0:8765 (reachable from the phone on LAN)
-  Open:  http://27-iMac.local:8765    # from the iPhone / any LAN device
+  Open:  http://<this-machine>.local:8765   # from the iPhone / any LAN device
 
 Env:
   DSP_WEB_PORT   override port (default 8765)
@@ -22,6 +22,7 @@ Design notes / constraints honoured:
 import json
 import os
 import re
+import socket
 import ssl
 import subprocess
 import sys
@@ -1513,7 +1514,9 @@ def serve_tls():
 def main():
     threading.Thread(target=serve_tls, daemon=True).start()
     httpd = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print("HiFi Dashboard on http://0.0.0.0:%d  (open http://27-iMac.local:%d from the phone)" % (PORT, PORT))
+    host = (socket.gethostname() or "localhost").split(".")[0]
+    print("HiFi Dashboard on http://0.0.0.0:%d  (open http://%s.local:%d from the phone)"
+          % (PORT, host, PORT))
     if TOKEN:
         print("Token auth ENABLED — append ?t=%s" % TOKEN)
     try:

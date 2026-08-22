@@ -18,15 +18,18 @@ Signal facts (verified live 2026-07-05 — see the nexia-text-protocol-control m
 
 The unit's instance IDs can renumber if the Nexia design is ever recompiled
 and re-pushed from the Windows software. If control starts erroring, re-scan
-(`biamp-ntp --host NEXIA_HOST scan OUTLVLPM`) and update OUT_INST below.
+(`biamp-ntp --host $NEXIA_HOST scan OUTLVLPM`) and update OUT_INST below.
 """
+import os
 import threading
 import time
 
 from biamp_ntp import BiampNTP, BiampError
 
-HOST = "NEXIA_HOST"
-PORT = 23
+# Address of the Nexia unit. Deliberately NOT hardcoded: this file is public and
+# the address is a fact about one particular install, not about the code.
+HOST = os.environ.get("NEXIA_HOST", "")
+PORT = int(os.environ.get("NEXIA_PORT", "23"))
 DEV = 1              # Nexia device number (GET 0 DEVID -> 1)
 OUT_INST = 8         # PM Stereo Line Output block instance (new sub config, sent 2026-07-05)
 SUB_CHANS = (5, 6)   # sub amp is fed from output channels 5 & 6 (stereo)
@@ -40,6 +43,10 @@ LVL_MAX = 0.0
 
 # Persistent, thread-safe (command() serializes internally), auto-reconnects
 # if the device drops the idle session.
+if not HOST:
+    raise RuntimeError(
+        "NEXIA_HOST is not set — point it at your Nexia unit, e.g. "
+        "NEXIA_HOST=192.168.1.50 (find it with `biamp-ntp --host <ip> scan DEVID`)")
 _dsp = BiampNTP(HOST, device=DEV, port=PORT, timeout=3.0)
 
 # Write/read coordination. BiampNTP serializes single commands, but a write

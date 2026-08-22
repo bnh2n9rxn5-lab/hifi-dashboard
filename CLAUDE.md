@@ -28,6 +28,12 @@ auto-reload; the process runs whatever it loaded at launch.
 
     launchctl kickstart -k gui/$(id -u)/com.hifi.dashboard
 
+`kickstart` re-runs the process but does **not** re-read the plist. Changing
+`EnvironmentVariables` (e.g. `NEXIA_HOST`) needs a full reload:
+
+    launchctl bootout gui/$(id -u)/com.hifi.dashboard
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hifi.dashboard.plist
+
 On 2026-08-22 the live process was six weeks stale — older than the commit fixing
 the very bug being reported — and presented as Apple Music misbehaving. When a
 symptom contradicts the source, check `ps -Ao pid,lstart | grep server.py`
@@ -36,6 +42,14 @@ against the file mtime and `git log` **before** debugging the code.
 **2. Bump `APP_VERSION` on any served-page change.** Phones cache the page hard;
 the client self-reloads only when its stamp differs from `/api/status`. A page
 change without a bump means phones keep the old UI forever.
+
+## Required environment
+
+`NEXIA_HOST` must point at the Biamp Nexia (there is no default — `nexia.py` raises
+at import if it is unset, and `server.py` imports it, so the whole app refuses to
+start). It lives in the LaunchAgent plist alongside `DSP_WEB_TOKEN`. The address
+was hardcoded until 2026-08-22; it came out because the repo is going public and an
+install-specific address is a fact about one house, not about the code.
 
 ## Helpers
 
