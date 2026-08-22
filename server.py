@@ -317,7 +317,10 @@ def act_stop():
 
 
 def act_play(name):
-    return run([os.path.join(BINDIR, "dsp-play"), name], timeout=30)
+    # -s = sequential: the playlist plays in its stored order. dsp-play
+    # defaults to shuffle, so every playlist launched from here arrived
+    # scrambled; shuffle stays explicit (Favourites button, artist/genre).
+    return run([os.path.join(BINDIR, "dsp-play"), "-s", name], timeout=30)
 
 
 def act_play_genre(name):
