@@ -38,7 +38,7 @@ PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 # http stays up unchanged so existing bookmarks and the QR codes keep working.
 TLS_PORT = int(os.environ.get("DSP_WEB_TLS_PORT", "8766"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v16"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v17"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1153,7 +1153,7 @@ requestAnimationFrame(meterFrame);
 const TLS_PORT="__TLS_PORT__";
 const lsGet=(k,d)=>{try{const v=localStorage.getItem(k);return v==null?d:v}catch(e){return d}};
 const lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
-let splCtx=null,splStream=null,splAn=null,splBuf=null,splRaf=0,splLast=0,
+let splCtx=null,splStream=null,splAn=null,splBuf=null,splRaf=0,splLast=0,splSrc=null,splNodes=[],
     splMs=0,splNorm=0,splRaw=-Infinity,splMax=-Infinity,
     splWt=lsGet('splWt','A'),splResp=lsGet('splResp','F'),
     splOffset=parseFloat(lsGet('splOffset','0'))||0;
@@ -1168,12 +1168,18 @@ function splSegs(){
 // another at 12194 Hz (Q=0.5 is exactly critical damping = repeated real pole);
 // A adds the 107.65/737.86 Hz pair, which is one section at their geometric mean
 // with Q = sqrt(p1*p2)/(p1+p2). Z is the unweighted signal.
-function splChain(src){
+function splChain(){
   const c=splCtx,mk=(t,f,q)=>{const b=c.createBiquadFilter();b.type=t;b.frequency.value=f;b.Q.value=q;return b};
+  // Rewire only. Changing weighting must NEVER touch the MediaStream: track.stop()
+  // is permanent, and a rebuilt graph on an ended track feeds silence, which the
+  // exponential average then walks steadily downward instead of failing loudly.
+  try{splSrc.disconnect()}catch(e){}
+  splNodes.forEach(n=>{try{n.disconnect()}catch(e){}});
   const nodes=[];
   if(splWt!=='Z'){nodes.push(mk('highpass',20.598997,0.5),mk('lowpass',12194.217,0.5))}
   if(splWt==='A'){nodes.push(mk('highpass',281.78,0.33333))}
-  let n=src;nodes.forEach(f=>{n.connect(f);n=f});n.connect(splAn);
+  splNodes=nodes;
+  let n=splSrc;nodes.forEach(f=>{n.connect(f);n=f});n.connect(splAn);
   // Both weightings are defined as 0 dB at 1 kHz. Measure the chain there rather
   // than hardcoding the +2.0/+0.06 dB book constants — self-checking, and it
   // stays correct if the sections above are ever changed.
@@ -1227,7 +1233,8 @@ async function splStart(){
   try{await splCtx.resume()}catch(e){}
   splAn=splCtx.createAnalyser();splAn.fftSize=2048;
   splBuf=new Float32Array(splAn.fftSize);
-  splChain(splCtx.createMediaStreamSource(splStream));
+  splSrc=splCtx.createMediaStreamSource(splStream);
+  splChain();
   splMs=0;splLast=0;splMax=-Infinity;
   $('splBtn').textContent='Stop mic';$('splBtn').classList.add('on');
   splRaf=requestAnimationFrame(splFrame);
@@ -1236,19 +1243,14 @@ function splStop(){
   if(splRaf)cancelAnimationFrame(splRaf);splRaf=0;
   if(splStream)splStream.getTracks().forEach(t=>t.stop());
   if(splCtx){try{splCtx.close()}catch(e){}}
-  splStream=null;splCtx=null;splAn=null;splMs=0;splRaw=-Infinity;
+  splStream=null;splCtx=null;splAn=null;splSrc=null;splNodes=[];splMs=0;splRaw=-Infinity;
   $('splBtn').textContent='Start mic';$('splBtn').classList.remove('on');
   $('splNum').textContent='—';
 }
 const splToggle=()=>splCtx?splStop():splStart();
 function splSetWt(v){
   splWt=v;lsSet('splWt',v);splSegs();
-  if(splCtx){const st=splStream;splStop();splStream=st;   // keep the granted stream
-    splCtx=new (window.AudioContext||window.webkitAudioContext)();
-    splAn=splCtx.createAnalyser();splAn.fftSize=2048;splBuf=new Float32Array(splAn.fftSize);
-    splChain(splCtx.createMediaStreamSource(splStream));
-    splMs=0;splLast=0;$('splBtn').textContent='Stop mic';$('splBtn').classList.add('on');
-    splRaf=requestAnimationFrame(splFrame);}
+  if(splCtx&&splSrc){splChain();splMs=0;splLast=0}   // rewire in place, mic untouched
 }
 function splSetResp(v){splResp=v;lsSet('splResp',v);splSegs()}
 function splResetMax(){splMax=-Infinity;$('splMax').textContent='—'}
