@@ -365,14 +365,29 @@ PLAY_TRACK_SCRIPT = '''on run argv
       duplicate t to user playlist "HiFi Queue"
     end if
     set shuffle enabled to false
+    set nm to name of t
+    -- Same two traps as dsp-play-artist: playing a playlist the instant it is
+    -- built opens on track 1 despite a good track reference, and `whose name is
+    -- (name of t)` errors -1728 unevaluated. Settle, then confirm the landing.
+    delay 0.5
     set qt to missing value
     try
       set qt to (first track of user playlist "HiFi Queue" whose persistent ID is pid)
     end try
     if qt is missing value then
-      set qt to (first track of user playlist "HiFi Queue" whose name is (name of t))
+      try
+        set qt to (first track of user playlist "HiFi Queue" whose name is nm)
+      end try
     end if
-    play qt
+    if qt is missing value then
+      play user playlist "HiFi Queue"
+    else
+      play qt
+      delay 0.4
+      try
+        if (persistent ID of current track) is not pid then play qt
+      end try
+    end if
     return (name of t) & " / " & (artist of t)
   end tell
 end run'''

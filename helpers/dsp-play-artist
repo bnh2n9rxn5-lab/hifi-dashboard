@@ -128,19 +128,32 @@ on run argv
       -- album run on in order instead of draining into Autoplay
       set shuffle enabled to false
       set t1 to item 1 of src
+      set pid to persistent ID of t1
+      set nm to name of t1
+      -- A just-built playlist needs a beat. Play it the instant the duplicates
+      -- land and Music accepts the current-playlist change but starts at track
+      -- 1 anyway (verified live: queue built, lookup resolved to index 72, and
+      -- playback still opened on index 1). So settle, then confirm we actually
+      -- landed on the pick and re-issue once if not. `nm` is evaluated out here
+      -- because `whose name is (name of t1)` errors -1728 inside the filter.
+      delay 0.5
       set qt to missing value
       try
-        set qt to (first track of user playlist "HiFi Queue" whose persistent ID is (persistent ID of t1))
+        set qt to (first track of user playlist "HiFi Queue" whose persistent ID is pid)
       end try
       if qt is missing value then
         try
-          set qt to (first track of user playlist "HiFi Queue" whose name is (name of t1))
+          set qt to (first track of user playlist "HiFi Queue" whose name is nm)
         end try
       end if
       if qt is missing value then
         play user playlist "HiFi Queue"
       else
         play qt
+        delay 0.4
+        try
+          if (persistent ID of current track) is not pid then play qt
+        end try
       end if
       return "PLAYING " & n & " tracks — " & q & lbl & ", album context"
     else
