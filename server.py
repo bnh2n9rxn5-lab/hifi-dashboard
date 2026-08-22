@@ -38,7 +38,7 @@ PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 # http stays up unchanged so existing bookmarks and the QR codes keep working.
 TLS_PORT = int(os.environ.get("DSP_WEB_TLS_PORT", "8766"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v17"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v18"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1096,6 +1096,21 @@ function buildMeters(s){
 // fault, so show it as such rather than as a number pinned to the -60 bar floor.
 const fmtDb=v=>(v==null||!isFinite(v))?'—':(v<=-80?'−∞':(v>0?'+':'')+v.toFixed(1));
 
+// Header readout. Source is worth watching — a flipped input is a real failure
+// mode and the reason Fix Audio exists. Master gain is not: it is cut-only and
+// nothing in this app writes it, so it read 0.0 dB permanently. Show the live
+// input level in that slot instead, and surface gain ONLY when it is non-zero,
+// which would mean something outside this app (IR remote, miniDSP app) moved it.
+let hdrSrc='', hdrGain=null;
+function hdrPaint(inDb){
+  if(!hdrSrc){$('srcLbl').textContent='';return}
+  let t=hdrSrc+' · in '+fmtDb(inDb);
+  if(hdrGain!=null&&Math.abs(hdrGain)>0.05)t+=' · gain '+hdrGain.toFixed(1)+'dB';
+  $('srcLbl').textContent=t;
+}
+const inPeak=a=>{const v=(a||[]).slice(0,2).filter(x=>x!=null&&isFinite(x));
+  return v.length?Math.max(...v):null};
+
 // ---- fast meters: 8Hz poll of minidspd via /api/meters + ballistics ----
 // instant attack, ~1.5s full-scale decay, peak-hold marker (1.5s hold, then falls)
 let mTarget=[0,0,0,0,0,0], mDisp=[0,0,0,0,0,0], mPeak=[0,0,0,0,0,0],
@@ -1136,6 +1151,7 @@ function meterFrame(ts){
     mDbD[i]=d>=mDbD[i]?d:Math.max(d,mDbD[i]-DB_DECAY*dt);
     if(dbs[i])dbs[i].textContent=fmtDb(mDbD[i]);
   }
+  hdrPaint(Math.max(mDbD[0],mDbD[1]));
 }
 setInterval(pollMeters,125);
 requestAnimationFrame(meterFrame);
@@ -1296,7 +1312,8 @@ function render(s){
     paintSeek();
   }
   if(s.volume!=null && !dragging){$('vol').value=s.volume; volLive(s.volume,true)}
-  $('srcLbl').textContent = s.source? (s.source+' · '+(s.master_gain!=null?s.master_gain.toFixed(1)+'dB':'')) : '';
+  hdrSrc=s.source||''; hdrGain=(s.master_gain!=null?s.master_gain:null);
+  if(Date.now()-mLastOk>=1200) hdrPaint(inPeak(s.inputs));
   // mute
   const mb=$('muteBtn');mb.classList.toggle('on',!!s.mute);mb.textContent=s.mute?'Muted':'Mute';
   // subs (Nexia)
