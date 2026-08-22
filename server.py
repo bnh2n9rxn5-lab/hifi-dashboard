@@ -33,7 +33,7 @@ import nexia  # Nexia PM sub-bus control (telnet, stdlib) — see nexia.py
 
 PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v14"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v15"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -324,6 +324,82 @@ def act_play_genre(name):
     return run([os.path.join(BINDIR, "dsp-play-genre"), name], timeout=30)
 
 
+# ---- library search --------------------------------------------------------
+SEARCH_SCRIPT = '''on run argv
+  set q to item 1 of argv
+  tell application "Music"
+    set res to (search library playlist 1 for q only songs)
+    set outLines to {}
+    set n to 0
+    repeat with t in res
+      set n to n + 1
+      if n > 25 then exit repeat
+      set end of outLines to (persistent ID of t) & "|" & (name of t) & "|" & (artist of t) & "|" & (album of t)
+    end repeat
+    set AppleScript's text item delimiters to linefeed
+    return outLines as text
+  end tell
+end run'''
+
+# Plays the picked track IN ITS ALBUM CONTEXT via the HiFi Queue (shuffle off,
+# album order continues after it) — a 1-track queue would hand playback to
+# Autoplay's random picks, the exact failure the artist fix killed.
+PLAY_TRACK_SCRIPT = '''on run argv
+  set pid to item 1 of argv
+  tell application "Music"
+    set t to (first track of library playlist 1 whose persistent ID is pid)
+    set alb to album of t
+    if not (exists user playlist "HiFi Queue") then
+      make new user playlist with properties {name:"HiFi Queue"}
+    end if
+    delete every track of user playlist "HiFi Queue"
+    if alb is not "" then
+      try
+        duplicate (every track of library playlist 1 whose album is alb) to user playlist "HiFi Queue"
+      end try
+    end if
+    if (count tracks of user playlist "HiFi Queue") is 0 then
+      duplicate t to user playlist "HiFi Queue"
+    end if
+    set shuffle enabled to false
+    set qt to missing value
+    try
+      set qt to (first track of user playlist "HiFi Queue" whose persistent ID is pid)
+    end try
+    if qt is missing value then
+      set qt to (first track of user playlist "HiFi Queue" whose name is (name of t))
+    end if
+    play qt
+    return (name of t) & " / " & (artist of t)
+  end tell
+end run'''
+
+
+def act_search(q):
+    q = (q or "").strip()
+    if len(q) < 2:
+        return {"ok": True, "results": []}
+    rc, out, err = run(["osascript", "-e", SEARCH_SCRIPT, q], timeout=20)
+    if rc != 0:
+        return {"ok": False, "error": (err or "search failed").strip()[:120]}
+    results = []
+    for line in out.splitlines():
+        parts = line.split("|", 3)
+        if len(parts) == 4 and parts[0].strip():
+            results.append({"pid": parts[0].strip(), "title": parts[1],
+                            "artist": parts[2], "album": parts[3]})
+    return {"ok": True, "results": results}
+
+
+def act_play_track(pid):
+    if not re.fullmatch(r"[0-9A-F]{16}", (pid or "").strip()):
+        return (2, "", "bad track id")
+    rc, out, err = run(["osascript", "-e", PLAY_TRACK_SCRIPT, pid.strip()], timeout=30)
+    if rc != 0:
+        return (rc, "", (err or "track not found").strip()[:120])
+    return (0, "playing %s (album follows)" % out.strip(), "")
+
+
 def act_play_artist(name):
     # -a = the artist's whole library catalogue (shuffled), not just favourites.
     # Favourites-only queues could be a single track, after which Music's
@@ -582,6 +658,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(full_status())
         if u.path == "/api/meters":
             return self._json(dspd_levels())
+        if u.path == "/api/search":
+            return self._json(act_search(q.get("q", [""])[0]))
         if u.path == "/api/art":
             data, mime = current_artwork()
             if not data:
@@ -654,6 +732,8 @@ class Handler(BaseHTTPRequestHandler):
             rc, out, err = act_play_genre(arg("name", ""))
         elif p == "/api/play-artist":
             rc, out, err = act_play_artist(arg("name", ""))
+        elif p == "/api/play-track":
+            rc, out, err = act_play_track(arg("pid", ""))
         else:
             return self._json({"ok": False, "error": "not found"}, 404)
 
@@ -703,6 +783,16 @@ header{display:flex;align-items:center;justify-content:space-between;padding:4px
 .np-title{font-size:23px;font-weight:750;margin:6px 0 2px;line-height:1.15}
 .fixbtn{font-size:11px;padding:5px 10px;border-radius:9px;border:1px solid #2a2f3d;background:#171b25;
   color:var(--dim);font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.srch{width:100%;font-size:16px;padding:12px 14px;border-radius:12px;border:1px solid #2a2f3d;
+  background:#171b25;color:var(--ink);outline:none;-webkit-appearance:none}
+.srch::placeholder{color:var(--dim)}
+.srchres{max-height:280px;overflow-y:auto;border-radius:12px;margin-top:6px}
+.srchrow{padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.05);cursor:pointer;
+  background:#141821;-webkit-tap-highlight-color:transparent}
+.srchrow:active{background:#1d2330}
+.srchrow .t{font-size:15px;font-weight:650}
+.srchrow .a{font-size:12px;color:var(--dim);margin-top:1px}
+.srchempty{padding:10px 12px;color:var(--dim);font-size:13px;background:#141821;border-radius:12px}
 .fixbtn:disabled{opacity:.5}
 .np-main{display:flex;align-items:center;gap:14px;margin-top:6px}
 .np-meta{flex:1;min-width:0}
@@ -855,6 +945,10 @@ select{width:100%;padding:13px;border-radius:13px;background:rgba(255,255,255,.0
       <button class="act stop" onclick="post('/api/stop')">Stop</button>
     </div>
     <button class="pbtn" style="width:100%;margin-bottom:10px" onclick="post('/api/faves')">★ Favourites — shuffle</button>
+    <input id="srch" class="srch" type="search" placeholder="Search library…" autocomplete="off"
+      oninput="srchInput()" onfocus="srchInput()">
+    <div id="srchRes" class="srchres"></div>
+    <div style="height:10px"></div>
     <select id="plSel" onchange="if(this.value)post('/api/play?name='+encodeURIComponent(this.value))">
       <option value="">Playlists…</option></select>
     <div style="height:10px"></div>
@@ -1004,6 +1098,32 @@ $('vol').addEventListener('mouseup',()=>{dragging=false});
 // ---- subs (Nexia, dB not %) ----
 let subDragging=false, subTimer=null, subPending=null, subMutePending=null, subPendingAt=0;
 let lovePending=null, lovePendingAt=0, artKey=null;
+// ---- library search: debounced, tap a result to play it (album follows) ----
+let srchTimer=null, srchSeq=0;
+function srchInput(){
+  clearTimeout(srchTimer);
+  const q=$('srch').value.trim();
+  if(q.length<2){$('srchRes').innerHTML='';return;}
+  srchTimer=setTimeout(async()=>{
+    const my=++srchSeq;
+    try{
+      const r=await fetch('/api/search?q='+encodeURIComponent(q),{headers:hdrs()});
+      const j=await r.json();
+      if(my!==srchSeq)return;                       // stale response, newer query in flight
+      const R=$('srchRes');
+      if(!j.ok){R.innerHTML='<div class="srchempty">search error</div>';return;}
+      if(!j.results.length){R.innerHTML='<div class="srchempty">no matches</div>';return;}
+      R.innerHTML=j.results.map(t=>
+        '<div class="srchrow" data-pid="'+t.pid+'"><div class="t">'+esc(t.title)+'</div>'+
+        '<div class="a">'+esc(t.artist)+(t.album?' · '+esc(t.album):'')+'</div></div>').join('');
+      R.querySelectorAll('.srchrow').forEach(row=>row.onclick=()=>{
+        post('/api/play-track?pid='+row.dataset.pid);
+        $('srch').value='';R.innerHTML='';$('srch').blur();
+      });
+    }catch(e){}
+  },350);
+}
+const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function fixAudio(){
   const b=$('fixBtn');b.disabled=true;const t=b.textContent;b.textContent='Fixing…';
   try{
