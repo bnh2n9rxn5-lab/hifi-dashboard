@@ -3,3 +3,7 @@ __pycache__/
 .DS_Store
 # QR codes encode the dashboard URL including the auth token
 hifi-qr*.png
+# TLS material for the HTTPS listener — private keys must never be committed.
+# Regenerate with ./make-cert.sh; the CA is stable, so re-issuing the leaf for a
+# new LAN IP does not mean re-installing anything on the phone.
+certs/

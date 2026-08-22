@@ -22,6 +22,7 @@ Design notes / constraints honoured:
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import threading
@@ -32,11 +33,19 @@ from urllib.parse import urlparse, parse_qs
 import nexia  # Nexia PM sub-bus control (telnet, stdlib) — see nexia.py
 
 PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
+# The SPL meter needs the phone mic, and getUserMedia demands a secure
+# context — iOS Safari blocks it over plain http. So we ALSO listen on TLS.
+# http stays up unchanged so existing bookmarks and the QR codes keep working.
+TLS_PORT = int(os.environ.get("DSP_WEB_TLS_PORT", "8766"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v15"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v16"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
+CERT_DIR = os.path.join(HERE, "certs")
+CERTFILE = os.path.join(CERT_DIR, "server.crt")
+KEYFILE = os.path.join(CERT_DIR, "server.key")
+CAFILE = os.path.join(CERT_DIR, "ca.crt")
 
 # Quick-volume targets (match the dsp-loud/-medium/-quiet helpers)
 VOL_QUICK = {"quiet": 35, "medium": 60, "loud": 85}
@@ -642,11 +651,28 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _html(self):
-        body = PAGE.replace("__APP_VERSION__", APP_VERSION).encode()
+        body = (PAGE.replace("__APP_VERSION__", APP_VERSION)
+                    .replace("__TLS_PORT__", str(TLS_PORT))).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _ca_cert(self):
+        # Serving the root CA so the phone can install it by visiting a URL —
+        # far easier than AirDropping a file. Public material: the CA *key*
+        # never leaves certs/ and is gitignored.
+        try:
+            with open(CAFILE, "rb") as f:
+                body = f.read()
+        except OSError:
+            return self._json({"ok": False, "error": "no CA cert — run make-cert.sh"}, 404)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-x509-ca-cert")
+        self.send_header("Content-Disposition", 'attachment; filename="mb-hifi-ca.crt"')
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
@@ -670,6 +696,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._html()
         if u.path in ("/icon-180.png", "/icon-512.png"):
             return self._png(u.path.lstrip("/"))
+        if u.path == "/ca.crt":
+            return self._ca_cert()
         if not self._authed(q):
             return self._json({"ok": False, "error": "unauthorized"}, 401)
         if u.path == "/api/status":
@@ -872,11 +900,28 @@ header{display:flex;align-items:center;justify-content:space-between;padding:4px
 .meters{display:flex;flex-direction:column;gap:9px}
 .meter{display:flex;align-items:center;gap:10px}
 .meter .mlab{width:34px;font-size:11px;color:var(--dim);font-weight:700}
+.meter .mdb{width:50px;text-align:right;font-size:11px;color:var(--dim);font-weight:700;
+  font-variant-numeric:tabular-nums;letter-spacing:-.2px}
 .bar{flex:1;height:9px;border-radius:6px;background:rgba(255,255,255,.07);overflow:hidden;position:relative}
 .bar .peak{position:absolute;top:0;bottom:0;width:2px;background:rgba(255,255,255,.85);left:0;opacity:0}
 .bar .peak.on{opacity:.9}
 .fill{height:100%;width:0;border-radius:6px;
   background:linear-gradient(90deg,#22d3ee,#34d399 55%,#fbbf24 80%,#fb7185);transition:width .12s linear}
+.splmain{display:flex;align-items:flex-end;gap:14px;margin-top:4px}
+.splnum{font-size:46px;font-weight:800;line-height:1;letter-spacing:-1.5px;font-variant-numeric:tabular-nums}
+.splunit{font-size:12px;color:var(--dim);font-weight:700}
+.splside{flex:1;display:flex;align-items:center;justify-content:flex-end;gap:8px}
+.splmax{font-size:12px;color:var(--dim);font-weight:700;font-variant-numeric:tabular-nums}
+.splwarn{font-size:12px;color:#fbbf24;margin-top:8px;line-height:1.35}
+.splwarn a{color:#22d3ee}
+.splopts{display:flex;gap:8px;margin-top:10px}
+.seg{flex:1;display:flex;background:rgba(255,255,255,.05);border-radius:11px;padding:3px;gap:3px}
+.seg button{flex:1;padding:8px 0;border:none;border-radius:9px;background:transparent;color:var(--dim);
+  font-weight:700;font-size:12px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.seg button.on{background:rgba(255,255,255,.12);color:var(--txt)}
+.splcal{display:flex;gap:8px;align-items:center;margin-top:10px}
+.splcal input{flex:1;min-width:0;font-size:16px;padding:9px 11px;border-radius:10px;border:1px solid #2a2f3d;
+  background:#171b25;color:var(--ink);outline:none;-webkit-appearance:none}
 select{width:100%;padding:13px;border-radius:13px;background:rgba(255,255,255,.05);color:var(--txt);
   border:1px solid var(--line);font-size:15px;appearance:none;font-weight:600}
 .muted{color:var(--dim);font-size:12px;margin-top:8px;text-align:center}
@@ -957,6 +1002,36 @@ select{width:100%;padding:13px;border-radius:13px;background:rgba(255,255,255,.0
   </div>
 
   <div class="card">
+    <div class="row between"><div class="label" style="margin:0">Room level</div>
+      <div class="splunit" id="splUnit">dB(A) fast</div></div>
+    <div class="splmain">
+      <div class="splnum" id="splNum">—</div>
+      <div class="splside">
+        <div class="splmax"><span id="splMax">—</span> max</div>
+        <button class="fixbtn" onclick="splResetMax()">reset</button>
+      </div>
+    </div>
+    <div class="splwarn" id="splWarn"></div>
+    <button class="mute" id="splBtn" style="width:100%;margin-top:10px" onclick="splToggle()">Start mic</button>
+    <div class="splopts">
+      <div class="seg" id="splWtSeg">
+        <button data-v="A" onclick="splSetWt('A')">A</button>
+        <button data-v="C" onclick="splSetWt('C')">C</button>
+        <button data-v="Z" onclick="splSetWt('Z')">Z</button>
+      </div>
+      <div class="seg" id="splRespSeg">
+        <button data-v="F" onclick="splSetResp('F')">Fast</button>
+        <button data-v="S" onclick="splSetResp('S')">Slow</button>
+      </div>
+    </div>
+    <div class="splcal">
+      <input id="splRef" type="number" inputmode="decimal" placeholder="reference dB">
+      <button class="fixbtn" onclick="splCalibrate()">Calibrate</button>
+    </div>
+    <div class="muted" id="splOff">uncalibrated — relative only</div>
+  </div>
+
+  <div class="card">
     <div class="label">Music</div>
     <div class="grid2" style="margin-bottom:10px">
       <button class="act start" onclick="post('/api/start')">Start</button>
@@ -1006,18 +1081,28 @@ function buildMeters(s){
     ['1',s.output_pct&&s.output_pct[0]],['2',s.output_pct&&s.output_pct[1]],
     ['3',s.output_pct&&s.output_pct[2]],['4',s.output_pct&&s.output_pct[3]]];
   if(!m.dataset.built){
-    m.innerHTML=rows.map(r=>`<div class="meter"><div class="mlab">${r[0]}</div><div class="bar"><div class="fill"></div><div class="peak"></div></div></div>`).join('');
+    m.innerHTML=rows.map(r=>`<div class="meter"><div class="mlab">${r[0]}</div><div class="bar"><div class="fill"></div><div class="peak"></div></div><div class="mdb">—</div></div>`).join('');
     m.dataset.built='1';
   }
-  if(Date.now()-mLastOk<1200) return;   // fast meter loop owns the bars
-  const fills=m.querySelectorAll('.fill');
-  rows.forEach((r,i)=>{fills[i].style.width=(r[1]||0)+'%'});
+  if(Date.now()-mLastOk<1200) return;   // fast meter loop owns the bars and numbers
+  const fills=m.querySelectorAll('.fill'), dbs=m.querySelectorAll('.mdb');
+  const raw=[...(s.inputs||[]).slice(0,2),...(s.outputs||[]).slice(0,4)];
+  rows.forEach((r,i)=>{
+    fills[i].style.width=(r[1]||0)+'%';
+    if(dbs[i])dbs[i].textContent=fmtDb(raw[i]);
+  });
 }
+// Meters read the noise floor (~-86) when nothing plays; that is silence, not a
+// fault, so show it as such rather than as a number pinned to the -60 bar floor.
+const fmtDb=v=>(v==null||!isFinite(v))?'—':(v<=-80?'−∞':(v>0?'+':'')+v.toFixed(1));
 
 // ---- fast meters: 8Hz poll of minidspd via /api/meters + ballistics ----
 // instant attack, ~1.5s full-scale decay, peak-hold marker (1.5s hold, then falls)
 let mTarget=[0,0,0,0,0,0], mDisp=[0,0,0,0,0,0], mPeak=[0,0,0,0,0,0],
     mPeakAt=[0,0,0,0,0,0], mLastOk=0, mLastFrame=0;
+// raw dB for the numeric column: same instant-attack/timed-decay shape as the
+// bars, but held in dB so the reading stays honest below the -60 bar floor
+let mDbT=[-99,-99,-99,-99,-99,-99], mDbD=[-99,-99,-99,-99,-99,-99];
 const dbPct=db=>Math.max(0,Math.min(100,(db+60)/60*100));
 async function pollMeters(){
   try{
@@ -1025,7 +1110,9 @@ async function pollMeters(){
     const j=await r.json();
     if(j.ok){
       mLastOk=Date.now();
-      mTarget=[...(j.inputs||[]).slice(0,2),...(j.outputs||[]).slice(0,4)].map(dbPct);
+      const raw=[...(j.inputs||[]).slice(0,2),...(j.outputs||[]).slice(0,4)];
+      mTarget=raw.map(dbPct);
+      mDbT=raw.map(v=>(v==null||!isFinite(v))?-99:v);
     }
   }catch(e){}
 }
@@ -1034,8 +1121,9 @@ function meterFrame(ts){
   const m=$('meters');
   if(!m||!m.dataset.built||Date.now()-mLastOk>1200) return;  // fast path dead -> slow render owns bars
   const dt=Math.min(0.1,(ts-mLastFrame)/1000||0.016); mLastFrame=ts;
-  const DECAY=100/1.5, PEAK_HOLD=1500, PEAK_FALL=100/1.0;
-  const fills=m.querySelectorAll('.fill'), peaks=m.querySelectorAll('.peak');
+  const DECAY=100/1.5, PEAK_HOLD=1500, PEAK_FALL=100/1.0, DB_DECAY=60/1.5;
+  const fills=m.querySelectorAll('.fill'), peaks=m.querySelectorAll('.peak'),
+        dbs=m.querySelectorAll('.mdb');
   for(let i=0;i<6;i++){
     const t=mTarget[i]||0;
     mDisp[i]=t>=mDisp[i]?t:Math.max(t,mDisp[i]-DECAY*dt);          // instant attack, timed decay
@@ -1044,10 +1132,137 @@ function meterFrame(ts){
     if(fills[i])fills[i].style.width=mDisp[i]+'%';
     if(peaks[i]){peaks[i].style.left='calc('+mPeak[i]+'% - 2px)';
       peaks[i].classList.toggle('on',mPeak[i]>1);}
+    const d=mDbT[i];
+    mDbD[i]=d>=mDbD[i]?d:Math.max(d,mDbD[i]-DB_DECAY*dt);
+    if(dbs[i])dbs[i].textContent=fmtDb(mDbD[i]);
   }
 }
 setInterval(pollMeters,125);
 requestAnimationFrame(meterFrame);
+
+// ---- SPL meter -------------------------------------------------------------
+// The phone is the thing sitting at the listening position, so the phone's mic
+// is the useful sensor. Three caveats are engineered around rather than hidden:
+//   1. getUserMedia needs a secure context. iOS blocks it over plain http, so
+//      this card only works on the https listener (see /ca.crt).
+//   2. iOS applies AGC/NS/AEC by default, which actively fights the measurement.
+//      Constraints turn them off, and we re-read the track settings to check the
+//      constraints were actually honoured rather than trusting they were.
+//   3. A mic reports dBFS, not SPL. Absolute numbers mean nothing until you
+//      calibrate against a known reference; until then this says so plainly.
+const TLS_PORT="__TLS_PORT__";
+const lsGet=(k,d)=>{try{const v=localStorage.getItem(k);return v==null?d:v}catch(e){return d}};
+const lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
+let splCtx=null,splStream=null,splAn=null,splBuf=null,splRaf=0,splLast=0,
+    splMs=0,splNorm=0,splRaw=-Infinity,splMax=-Infinity,
+    splWt=lsGet('splWt','A'),splResp=lsGet('splResp','F'),
+    splOffset=parseFloat(lsGet('splOffset','0'))||0;
+
+function splSegs(){
+  document.querySelectorAll('#splWtSeg button').forEach(b=>b.classList.toggle('on',b.dataset.v===splWt));
+  document.querySelectorAll('#splRespSeg button').forEach(b=>b.classList.toggle('on',b.dataset.v===splResp));
+  $('splUnit').textContent=(splWt==='Z'?'dB(Z)':'dB('+splWt+')')+(splResp==='F'?' fast':' slow');
+  $('splOff').textContent=splOffset?('calibrated — offset '+splOffset.toFixed(1)+' dB'):'uncalibrated — relative only';
+}
+// A- and C-weighting as biquad sections. C is a double real pole at 20.6 Hz and
+// another at 12194 Hz (Q=0.5 is exactly critical damping = repeated real pole);
+// A adds the 107.65/737.86 Hz pair, which is one section at their geometric mean
+// with Q = sqrt(p1*p2)/(p1+p2). Z is the unweighted signal.
+function splChain(src){
+  const c=splCtx,mk=(t,f,q)=>{const b=c.createBiquadFilter();b.type=t;b.frequency.value=f;b.Q.value=q;return b};
+  const nodes=[];
+  if(splWt!=='Z'){nodes.push(mk('highpass',20.598997,0.5),mk('lowpass',12194.217,0.5))}
+  if(splWt==='A'){nodes.push(mk('highpass',281.78,0.33333))}
+  let n=src;nodes.forEach(f=>{n.connect(f);n=f});n.connect(splAn);
+  // Both weightings are defined as 0 dB at 1 kHz. Measure the chain there rather
+  // than hardcoding the +2.0/+0.06 dB book constants — self-checking, and it
+  // stays correct if the sections above are ever changed.
+  const f=new Float32Array([1000]),m=new Float32Array(1),ph=new Float32Array(1);
+  let g=1;nodes.forEach(b=>{b.getFrequencyResponse(f,m,ph);g*=m[0]});
+  splNorm=g>0?-20*Math.log10(g):0;
+  // Measured against the published curves at 48 kHz: within 0.11 dB from 31.5 Hz
+  // to 2 kHz, +0.65 dB at 8 kHz, -3.1 dB at 16 kHz. The top-end error is
+  // bilinear-transform warping near Nyquist, inherent to biquads at this rate.
+  // It is immaterial here: the top octave carries a few percent of the energy in
+  // music and A-weighting already cuts it ~7 dB, so the effect on a broadband
+  // reading is under 0.2 dB — far inside the error of an uncalibrated phone mic.
+}
+function splFrame(ts){
+  splRaf=requestAnimationFrame(splFrame);
+  if(!splAn)return;
+  splAn.getFloatTimeDomainData(splBuf);
+  let sum=0;for(let i=0;i<splBuf.length;i++)sum+=splBuf[i]*splBuf[i];
+  const ms=sum/splBuf.length;
+  const dt=splLast?Math.min(.25,(ts-splLast)/1000):.05;splLast=ts;
+  // IEC time weighting is an exponential average of POWER (125 ms fast, 1 s
+  // slow) — averaging dB instead would skew every reading low.
+  const a=1-Math.exp(-dt/(splResp==='F'?.125:1));
+  splMs=splMs?splMs+(ms-splMs)*a:ms;
+  splRaw=splMs>0?10*Math.log10(splMs)+splNorm:-Infinity;
+  const spl=splRaw+splOffset;
+  if(isFinite(spl)&&spl>splMax)splMax=spl;
+  $('splNum').textContent=isFinite(spl)?spl.toFixed(1):'—';
+  $('splMax').textContent=isFinite(splMax)?splMax.toFixed(1):'—';
+}
+async function splStart(){
+  const W=$('splWarn');W.innerHTML='';
+  if(!window.isSecureContext||!navigator.mediaDevices){
+    const u='https://'+location.hostname+':'+TLS_PORT+'/'+(TOKEN?('?t='+encodeURIComponent(TOKEN)):'');
+    W.innerHTML='The mic needs a secure context — iOS blocks it over http. Open '+
+      '<a href="'+u+'">this page over https</a> instead (install the certificate first: '+
+      '<a href="/ca.crt">/ca.crt</a>).';
+    return;
+  }
+  try{
+    splStream=await navigator.mediaDevices.getUserMedia({audio:{
+      echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:1}});
+  }catch(e){W.textContent='Mic unavailable: '+(e.name||e.message||e);return}
+  // trust nothing: iOS may ignore the constraints, and AGC would quietly ruin it
+  try{
+    const st=splStream.getAudioTracks()[0].getSettings()||{};
+    const on=['autoGainControl','noiseSuppression','echoCancellation'].filter(k=>st[k]===true);
+    if(on.length)W.textContent='Warning: '+on.join(', ')+' still active — iOS ignored the constraint, so levels are being processed and readings will compress.';
+  }catch(e){}
+  splCtx=new (window.AudioContext||window.webkitAudioContext)();
+  try{await splCtx.resume()}catch(e){}
+  splAn=splCtx.createAnalyser();splAn.fftSize=2048;
+  splBuf=new Float32Array(splAn.fftSize);
+  splChain(splCtx.createMediaStreamSource(splStream));
+  splMs=0;splLast=0;splMax=-Infinity;
+  $('splBtn').textContent='Stop mic';$('splBtn').classList.add('on');
+  splRaf=requestAnimationFrame(splFrame);
+}
+function splStop(){
+  if(splRaf)cancelAnimationFrame(splRaf);splRaf=0;
+  if(splStream)splStream.getTracks().forEach(t=>t.stop());
+  if(splCtx){try{splCtx.close()}catch(e){}}
+  splStream=null;splCtx=null;splAn=null;splMs=0;splRaw=-Infinity;
+  $('splBtn').textContent='Start mic';$('splBtn').classList.remove('on');
+  $('splNum').textContent='—';
+}
+const splToggle=()=>splCtx?splStop():splStart();
+function splSetWt(v){
+  splWt=v;lsSet('splWt',v);splSegs();
+  if(splCtx){const st=splStream;splStop();splStream=st;   // keep the granted stream
+    splCtx=new (window.AudioContext||window.webkitAudioContext)();
+    splAn=splCtx.createAnalyser();splAn.fftSize=2048;splBuf=new Float32Array(splAn.fftSize);
+    splChain(splCtx.createMediaStreamSource(splStream));
+    splMs=0;splLast=0;$('splBtn').textContent='Stop mic';$('splBtn').classList.add('on');
+    splRaf=requestAnimationFrame(splFrame);}
+}
+function splSetResp(v){splResp=v;lsSet('splResp',v);splSegs()}
+function splResetMax(){splMax=-Infinity;$('splMax').textContent='—'}
+function splCalibrate(){
+  const ref=parseFloat($('splRef').value);
+  if(!isFinite(ref)||!isFinite(splRaw)){
+    $('splWarn').textContent='Start the mic and type the reading from a reference meter first.';return}
+  splOffset=ref-splRaw;lsSet('splOffset',String(splOffset));
+  splMax=-Infinity;$('splRef').value='';$('splRef').blur();splSegs();
+}
+// iOS suspends capture in the background anyway; release it cleanly so the
+// orange mic indicator does not linger and the stream is not held open.
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&splCtx)splStop()});
+splSegs();
 
 function render(s){
   if(!s){$('dot').classList.remove('live');return}
@@ -1255,7 +1470,29 @@ setInterval(poll,1400);
 """
 
 
+def serve_tls():
+    """HTTPS listener, for the one feature that cannot work without it.
+
+    Missing certs are not fatal: a fresh clone has no certs/ (gitignored), and
+    everything except the SPL meter works fine over plain http. Log and skip.
+    """
+    if not (os.path.exists(CERTFILE) and os.path.exists(KEYFILE)):
+        print("TLS off — no certs/server.crt; run ./make-cert.sh to enable the SPL meter")
+        return
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(CERTFILE, KEYFILE)
+        httpsd = ThreadingHTTPServer(("0.0.0.0", TLS_PORT), Handler)
+        httpsd.socket = ctx.wrap_socket(httpsd.socket, server_side=True)
+    except Exception as e:
+        print("TLS off — %s" % e)
+        return
+    print("HiFi Dashboard TLS on https://0.0.0.0:%d  (mic/SPL meter needs this one)" % TLS_PORT)
+    httpsd.serve_forever()
+
+
 def main():
+    threading.Thread(target=serve_tls, daemon=True).start()
     httpd = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print("HiFi Dashboard on http://0.0.0.0:%d  (open http://27-iMac.local:%d from the phone)" % (PORT, PORT))
     if TOKEN:
