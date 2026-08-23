@@ -50,8 +50,45 @@ on run argv
     end if
     if hit is missing value then return "NOT FOUND: " & q
     set nm to (name of hit as text)
-    if dry then return "WOULD PLAY: " & nm
+    set isSmart to false
+    try
+      set isSmart to (smart of hit)
+    end try
+    if dry then
+      if isSmart then return "WOULD PLAY: " & nm & " (smart -> snapshot)"
+      return "WOULD PLAY: " & nm
+    end if
     set shuffle enabled to wantShuffle
+    if isSmart then
+      -- SMART PLAYLISTS ARE SNAPSHOTTED, not played directly. Their membership is
+      -- recomputed live, so playing one means the queue mutates under the player:
+      -- a track that stops matching the rule is yanked mid-play (un-favouriting
+      -- while playing "Favourite Songs" does exactly this, and reads as the track
+      -- ending early), and every index after it shifts, so `back track` — which
+      -- steps by POSITION, not play history — lands on something you never heard.
+      -- Freezing it into HiFi Queue is the same trick the artist/genre picks use.
+      if not (exists user playlist "HiFi Queue") then
+        make new user playlist with properties {name:"HiFi Queue"}
+      end if
+      delete every track of user playlist "HiFi Queue"
+      try
+        duplicate (every track of hit) to user playlist "HiFi Queue"
+      on error
+        repeat with tr in (every track of hit)
+          try
+            duplicate tr to user playlist "HiFi Queue"
+          end try
+        end repeat
+      end try
+      set n to count tracks of user playlist "HiFi Queue"
+      if n is 0 then
+        play hit
+        return "PLAYING: " & nm & " (snapshot failed — playing the live list)"
+      end if
+      delay 0.5
+      play user playlist "HiFi Queue"
+      return "PLAYING: " & nm & " (" & n & " tracks, snapshot)"
+    end if
     play hit
     return "PLAYING: " & nm
   end tell

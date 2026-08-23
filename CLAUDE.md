@@ -75,6 +75,12 @@ in `helpers/` — they are inert until deployed:
   confirm you landed and re-issue. Cost a whole debugging round on 2026-08-22.
 - **`whose name is (name of t)` errors -1728** — the inner property isn't
   evaluated inside the filter. Assign it to a variable first.
+- **Smart playlists mutate under the player** — membership is recomputed live, so a
+  track that stops matching the rule is dropped mid-play and every later index shifts.
+  With `back track` stepping by position rather than play history, prev then lands on a
+  track that was never played. `dsp-play` snapshots smart playlists into `HiFi Queue`;
+  ordinary ones are played directly. Diagnosed 2026-08-23 from "track ended early, and
+  skip-back gave a different track" — 3 of the 14 playlists in the picker are smart.
 - **Music can wedge against Apple Events entirely** (-1712 on even `player state`,
   every call, indefinitely). Only a Music restart clears it. `run()` kills
   osascript on timeout but Music keeps executing the event it already accepted,

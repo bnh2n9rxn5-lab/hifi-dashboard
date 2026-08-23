@@ -87,6 +87,14 @@ Most of the difficulty in this project was Music.app, not the DSPs. Verified liv
 - **`duplicate` needs a specifier, not an evaluated list** — `duplicate (every track ... whose album is x) to user playlist "…"` works; a list variable fails with `-10006`. Persistent IDs survive duplication.
 - **Don't play a playlist you just built.** Music accepts the current-playlist change but ignores the track reference and opens at track 1. Settle first, then confirm you landed and re-issue.
 - **`whose name is (name of t)` errors `-1728`** — the inner property isn't evaluated inside the filter. Assign it to a variable first.
+- **Smart playlists mutate under the player.** A smart playlist's membership is
+  recomputed live, so playing one directly means the queue changes as you listen:
+  a track that stops matching the rule is yanked mid-play (un-favouriting while
+  playing a favourites-based list does exactly this, and reads as the track
+  ending early), and every index after it shifts. Since `back track` steps by
+  playlist POSITION and not play history, prev then lands on something you never
+  heard. `dsp-play` snapshots smart playlists into `HiFi Queue` and plays that;
+  ordinary playlists are still played directly, since they don't move.
 - **Music can wedge against Apple Events entirely** (`-1712` on even `player state`, indefinitely). Only restarting Music clears it. Worse, a timed-out `osascript` is killed while Music keeps executing the event it already accepted — so a half-built queue plays on.
 
 ## Troubleshooting
