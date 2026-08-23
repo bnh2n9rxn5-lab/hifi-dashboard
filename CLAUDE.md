@@ -81,6 +81,15 @@ in `helpers/` — they are inert until deployed:
   track that was never played. `dsp-play` snapshots smart playlists into `HiFi Queue`;
   ordinary ones are played directly. Diagnosed 2026-08-23 from "track ended early, and
   skip-back gave a different track" — 3 of the 14 playlists in the picker are smart.
+- **`play` does not evict a running Autoplay queue.** If Music is already on an
+  anonymous continuation, starting a playlist plays its first track and then the
+  old Up Next reclaims playback at the next boundary — first track yours, second
+  a stranger. `stop` before `play` tears the continuation down. Every queue start
+  in the helpers does this.
+- **A short queue drains straight into Autoplay.** Artist and genre picks set
+  `song repeat to all` so the queue loops instead. Album context is not enough on
+  its own: it can only pull tracks already in the library, so an artist owned as
+  singles off EPs still yields a 4-track queue.
 - **Music can wedge against Apple Events entirely** (-1712 on even `player state`,
   every call, indefinitely). Only a Music restart clears it. `run()` kills
   osascript on timeout but Music keeps executing the event it already accepted,

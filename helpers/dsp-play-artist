@@ -127,6 +127,7 @@ on run argv
       -- start ON the artist's own track so the pick is honoured, then let the
       -- album run on in order instead of draining into Autoplay
       set shuffle enabled to false
+      set song repeat to all
       set t1 to item 1 of src
       set pid to persistent ID of t1
       set nm to name of t1
@@ -136,6 +137,11 @@ on run argv
       -- playback still opened on index 1). So settle, then confirm we actually
       -- landed on the pick and re-issue once if not. `nm` is evaluated out here
       -- because `whose name is (name of t1)` errors -1728 inside the filter.
+      -- STOP FIRST. When Music is already on an anonymous Autoplay queue, `play`
+      -- starts the new playlist but the old Up Next continuation survives and
+      -- reclaims playback at the very next track boundary — first track yours,
+      -- second track a stranger. Stopping tears that continuation down.
+      stop
       delay 0.5
       set qt to missing value
       try
@@ -158,6 +164,9 @@ on run argv
       return "PLAYING " & n & " tracks — " & q & lbl & ", album context"
     else
       set shuffle enabled to true
+      set song repeat to all
+      stop
+      delay 0.4
       play user playlist "HiFi Queue"
       return "PLAYING " & n & " tracks — " & q & lbl
     end if

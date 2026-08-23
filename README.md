@@ -95,6 +95,15 @@ Most of the difficulty in this project was Music.app, not the DSPs. Verified liv
   playlist POSITION and not play history, prev then lands on something you never
   heard. `dsp-play` snapshots smart playlists into `HiFi Queue` and plays that;
   ordinary playlists are still played directly, since they don't move.
+- **`play` does not evict a running Autoplay queue.** If Music is already on an
+  anonymous continuation, starting a playlist plays its first track and then the
+  old Up Next reclaims playback at the next boundary — first track yours, second
+  a stranger. `stop` before `play` tears the continuation down. Every queue start
+  in the helpers does this.
+- **A short queue drains straight into Autoplay.** Artist and genre picks set
+  `song repeat to all` so the queue loops instead. Album context is not enough on
+  its own: it can only pull tracks already in the library, so an artist owned as
+  singles off EPs still yields a 4-track queue.
 - **Music can wedge against Apple Events entirely** (`-1712` on even `player state`, indefinitely). Only restarting Music clears it. Worse, a timed-out `osascript` is killed while Music keeps executing the event it already accepted — so a half-built queue plays on.
 
 ## Troubleshooting

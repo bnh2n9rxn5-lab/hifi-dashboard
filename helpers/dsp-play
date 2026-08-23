@@ -59,6 +59,10 @@ on run argv
       return "WOULD PLAY: " & nm
     end if
     set shuffle enabled to wantShuffle
+    -- Deterministic: artist/genre picks turn repeat ON (their queues can be tiny
+    -- and would otherwise drain into Autoplay). A playlist is long enough to
+    -- stand on its own, so clear it rather than inherit the last pick's state.
+    set song repeat to off
     if isSmart then
       -- SMART PLAYLISTS ARE SNAPSHOTTED, not played directly. Their membership is
       -- recomputed live, so playing one means the queue mutates under the player:
@@ -85,10 +89,13 @@ on run argv
         play hit
         return "PLAYING: " & nm & " (snapshot failed — playing the live list)"
       end if
+      stop
       delay 0.5
       play user playlist "HiFi Queue"
       return "PLAYING: " & nm & " (" & n & " tracks, snapshot)"
     end if
+    stop
+    delay 0.4
     play hit
     return "PLAYING: " & nm
   end tell

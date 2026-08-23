@@ -66,6 +66,9 @@ on run argv
     set n to count tracks of user playlist "HiFi Queue"
     if n is 0 then return "QUEUE BUILD FAILED for genre: " & q
     set shuffle enabled to true
+    set song repeat to all
+    stop
+    delay 0.4
     play user playlist "HiFi Queue"
     return "PLAYING " & n & " tracks — genre " & q & lbl
   end tell

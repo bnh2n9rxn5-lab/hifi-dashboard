@@ -39,7 +39,7 @@ PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 # http stays up unchanged so existing bookmarks and the QR codes keep working.
 TLS_PORT = int(os.environ.get("DSP_WEB_TLS_PORT", "8766"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v18"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v19"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -379,6 +379,9 @@ PLAY_TRACK_SCRIPT = '''on run argv
     -- Same two traps as dsp-play-artist: playing a playlist the instant it is
     -- built opens on track 1 despite a good track reference, and `whose name is
     -- (name of t)` errors -1728 unevaluated. Settle, then confirm the landing.
+    -- stop first: an Autoplay continuation would otherwise reclaim playback
+    -- one track later (see dsp-play-artist for the full note)
+    stop
     delay 0.5
     set qt to missing value
     try
