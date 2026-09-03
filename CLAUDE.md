@@ -5,8 +5,14 @@ dependency-free Python file (`server.py`, stdlib only) serving a dark PWA that
 drives three things — **Apple Music** (transport, Now Playing, artwork, favourite,
 search, playlist/artist/genre pickers) via AppleScript, the **miniDSP** via the
 `minidsp` CLI, and the **Biamp Nexia** sub bus via `nexia.py`. Sibling project
-`~/minidsp-dash/minidsp-dash` is the public, DSP-only cousin; this one stays
-unpublished (`origin` is a private backup remote — push after commits).
+`~/minidsp-dash/minidsp-dash` is the DSP-only cousin (public, and under a
+different org — `av-dsp-tools/minidsp-dash`). **This repo is public too**:
+`origin` is `bnh2n9rxn5-lab/hifi-dashboard`, not a private backup remote, so
+anything committed here is published the moment it is pushed — push after
+commits, but treat the history as readable by anyone. Keep `DSP_WEB_TOKEN` and
+the real Nexia address out of it; the token belongs in the LaunchAgent plist,
+and the `192.168.1.50` in `nexia.py` and `README.md` is a placeholder, not the
+live address.
 
 Also listens on **TLS at 8766** (`DSP_WEB_TLS_PORT`). That exists for one reason: the
 SPL meter needs the phone mic, `getUserMedia` needs a secure context, and iOS blocks
