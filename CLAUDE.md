@@ -44,9 +44,17 @@ you so:
     launchctl kickstart -k gui/$(id -u)/com.hifi.dashboard
 
 To resync the live checkout after pushing, confirm it holds nothing of its own
-first — `git -C ~/hifi-dashboard diff --quiet origin/main -- server.py` — then
-fast-forward it. Only reach for `reset --hard` when that check passes, since it
-is the check that makes the reset lossless.
+first, then fast-forward it:
+
+    git -C ~/hifi-dashboard status --porcelain    # blank = no local work
+    git -C ~/hifi-dashboard fetch origin main && \
+      git -C ~/hifi-dashboard merge --ff-only origin/main
+
+Ask `status`, not `diff origin/main`: after a fetch the working tree differs from
+the remote by exactly the commit you are pulling in, so a diff reports "dirty" on
+a perfectly clean checkout. `--ff-only` is the safety net either way — it refuses
+rather than clobbers. Only reach for `reset --hard` if the live copy was edited
+in place and you mean to discard that.
 
 `kickstart` re-runs the process but does **not** re-read the plist. Changing
 `EnvironmentVariables` (e.g. `NEXIA_HOST`) needs a full reload:
