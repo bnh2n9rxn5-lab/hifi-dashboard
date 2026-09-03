@@ -29,10 +29,24 @@ Runs as LaunchAgent `com.hifi.dashboard` on port 8765, token in the plist at
 
 ## Two rules that will waste your afternoon if you skip them
 
-**1. Restart after every `server.py` edit.** There is no watch-path and no
-auto-reload; the process runs whatever it loaded at launch.
+**1. Deploy, then restart, after every `server.py` edit.** There is no watch-path
+and no auto-reload; the process runs whatever it loaded at launch.
 
+There are **two checkouts**, and the one you edit is not the one that runs. The
+LaunchAgent's `ProgramArguments` and `WorkingDirectory` both point at
+`~/hifi-dashboard` — that is the live install, and the only copy the app
+executes. `~/hifi-dashboard-1` is the working clone (same `origin`, same branch)
+and is usually where an editor or agent session is rooted. Editing there and
+kickstarting reloads the *other* file and changes nothing, with no error to tell
+you so:
+
+    cp ~/hifi-dashboard-1/server.py ~/hifi-dashboard/server.py
     launchctl kickstart -k gui/$(id -u)/com.hifi.dashboard
+
+To resync the live checkout after pushing, confirm it holds nothing of its own
+first — `git -C ~/hifi-dashboard diff --quiet origin/main -- server.py` — then
+fast-forward it. Only reach for `reset --hard` when that check passes, since it
+is the check that makes the reset lossless.
 
 `kickstart` re-runs the process but does **not** re-read the plist. Changing
 `EnvironmentVariables` (e.g. `NEXIA_HOST`) needs a full reload:
@@ -43,7 +57,9 @@ auto-reload; the process runs whatever it loaded at launch.
 On 2026-08-22 the live process was six weeks stale — older than the commit fixing
 the very bug being reported — and presented as Apple Music misbehaving. When a
 symptom contradicts the source, check `ps -Ao pid,lstart | grep server.py`
-against the file mtime and `git log` **before** debugging the code.
+against the file mtime and `git log` **before** debugging the code — and mtime
+means `~/hifi-dashboard/server.py`, the deployed copy. The repo's mtime says
+only when you last edited, not what is running.
 
 **2. Bump `APP_VERSION` on any served-page change.** Phones cache the page hard;
 the client self-reloads only when its stamp differs from `/api/status`. A page
