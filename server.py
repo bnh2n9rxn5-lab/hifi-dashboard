@@ -39,7 +39,7 @@ PORT = int(os.environ.get("DSP_WEB_PORT", "8765"))
 # http stays up unchanged so existing bookmarks and the QR codes keep working.
 TLS_PORT = int(os.environ.get("DSP_WEB_TLS_PORT", "8766"))
 TOKEN = os.environ.get("DSP_WEB_TOKEN", "")
-APP_VERSION = "v19"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
+APP_VERSION = "v20"  # bump on any served-page change; stale clients auto-reload on mismatch (see poll())
 MINIDSP = "/usr/local/bin/minidsp"
 BINDIR = "/usr/local/bin"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -251,15 +251,30 @@ def full_status():
 
 # ---- music lists (for the pickers) --------------------------------------
 
-_LIST_CACHE = {}
+# A *failed* helper must never overwrite a good list. These exit clean with no
+# output when Music isn't up yet (or is wedged against Apple Events), so caching
+# the result unconditionally empties all three pickers until the next restart.
+# That is exactly what happened on 2026-08-29: the agent launched at 17:15,
+# Music opened at 17:21, and the first request in that window cached three empty
+# lists — playlists, artists and genres stayed blank for five days. Keep the last
+# good answer instead, and re-fetch on a timer so a new playlist shows up without
+# a restart. Each helper is sub-second, and /api/lists is fetched once per page
+# load, so retrying a failed list on every request costs nothing.
+_LIST_CACHE = {}   # name -> (fetched_at, lines)
+_LIST_TTL = 300    # seconds
 
 
 def helper_lines(name):
-    if name in _LIST_CACHE:
-        return _LIST_CACHE[name]
+    now = time.time()
+    hit = _LIST_CACHE.get(name)
+    if hit and now - hit[0] < _LIST_TTL:
+        return hit[1]
     rc, out, _ = run([os.path.join(BINDIR, name)], timeout=30)
     lines = [l.strip() for l in out.splitlines() if l.strip()]
-    _LIST_CACHE[name] = lines
+    if rc != 0 or not lines:
+        # An empty answer is a fault, not a library that lost all its playlists.
+        return hit[1] if hit else []
+    _LIST_CACHE[name] = (now, lines)
     return lines
 
 
